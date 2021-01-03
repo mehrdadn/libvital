@@ -1,0 +1,18 @@
+diff --git a/tests/tr1/tests/vector/test.cpp b/tests/tr1/tests/vector/test.cpp
+index 278bd0d..cde75ff 100644
+--- a/tests/tr1/tests/vector/test.cpp
++++ b/tests/tr1/tests/vector/test.cpp
+@@ -285,6 +285,7 @@ void test_main() { // test basic workings of vector definitions
+     CHECK(v0 <= v1);
+     CHECK(v1 >= v0);
+ 
++#if 0
+     { // test vector<bool>
+         typedef STD vector<bool, STD allocator<bool>> Bvector;
+ 
+@@ -368,4 +369,5 @@ void test_main() { // test basic workings of vector definitions
+             CHECK_INT(bv11[2], false);
+         }
+     }
++#endif
+ }

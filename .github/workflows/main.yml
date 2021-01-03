@@ -1,0 +1,39 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (Ubuntu)
+            os: ubuntu-20.04
+    defaults:
+      run:
+        shell: bash -e -o pipefail -l {0}
+    steps:
+    - name: Pre-checkout system configuration
+      run: |
+        rm -f -- ~/.bash_profile ~/.profile ~/.bashrc
+        printf '\n%s\n' 'if [ -n "${BASH_VERSION}" ] && [ -f ~/.bashrc ]; then . ~/.bashrc; fi' >> ~/.profile
+        git config --global core.symlinks true && git config --global core.autocrlf false
+        if command -v dpkg > /dev/null; then sudo dpkg-reconfigure debconf -f noninteractive -p high; fi
+    - name: Checking out repository
+      uses: actions/checkout@v1
+    # Modeled after Travis's job lifecycle: https://docs.travis-ci.com/user/job-lifecycle/#customizing-the-build-phase
+    - name: Initializing
+      run: . ./internal/ci/ci.sh before_install
+    - name: Installing dependencies
+      run: . ./internal/ci/ci.sh install
+    - name: Building
+      run: . ./internal/ci/ci.sh before_script
+    - name: Testing
+      run: . ./internal/ci/ci.sh script
+    - name: Deploying
+      run: . ./internal/ci/ci.sh deploy
+    - name: Finalizing
+      run: . ./internal/ci/ci.sh after_script
