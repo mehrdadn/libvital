@@ -1,12 +1,10 @@
 ### [`stationary_vector`](../../../include/vital/container/stationary_vector.hpp): A **low-latency**, **parallelizable** in-situ alternative to `vector`
 
-`std::vector` is fast, but its contiguity requirement presents shortcomings:
-- Sudden latency spikes that occur on reallocation
-- Pushing prevents parallel access (except when reservations are possible a priori)
+[Click here for the implementation (header-only).](../../../include/vital/container/stationary_vector.hpp)
 
-Instead, `stationary_vector` grows **_without_ moving elements**:
-- Its growth does not introduce "hiccups".
-- Insertion does not invalidate iterators or references to prior elements.
+`stationary_vector` is an alternative to `std::vector` that grows **without** moving elements, hence:
+- Its growth does not introduce "hiccups" due to reallocation.
+- It can be used while pushin, as insertion does not invalidate iterators or references to prior elements.
 
 **Semantically**, it is _almost_ a drop-in replacement for `std::vector`, except:
 - It is **piecewise-contiguous** (with geometrically larger chunks), not fully contiguous.
