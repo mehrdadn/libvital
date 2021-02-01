@@ -118,6 +118,14 @@ namespace detail
 	template<class T, T, T> struct is_same_value : std::false_type { };
 	template<class T, T V> struct is_same_value<T, V, V> : std::true_type { };
 
+	/*
+	TODO: Technically these metafunctions should check allocator_traits *as well as* the allocator itself, in case the user has specialized the behavior of allocator_traits.
+	However, I can't think of a portable way to detect if we're using the default allocator traits behavior.
+	Moreover, if the user is specializing types, then the default std::allocator we're checking against might be specialized too, so we're already wrong.
+	The only solution is to use implementation-specific traits (like _Is_default_allocator<>).
+	But the POD optimizations are too important to disregard. Users should just avoid specializing allocator types and instead provide custom classes.
+	*/
+
 	template<class Ax, class = void> struct uses_default_allocate_nohint : std::false_type { };
 	template<class Ax> struct uses_default_allocate_nohint<Ax, typename std::enable_if<
 		is_same_value<typename std::allocator_traits<Ax>::pointer(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::size_type), &Ax::allocate, &std::allocator<typename std::allocator_traits<Ax>::value_type>::allocate>::value,
@@ -132,6 +140,33 @@ namespace detail
 	template<class Ax> struct uses_default_deallocate<Ax, typename std::enable_if<
 		is_same_value<void(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::pointer, typename std::allocator_traits<Ax>::size_type), &Ax::deallocate, &std::allocator<typename std::allocator_traits<Ax>::value_type>::deallocate>::value,
 		void>::type> : std::true_type { };
+
+	template<class Ax, class = void> struct uses_default_value_construct : std::false_type { };
+	template<class Ax> struct uses_default_value_construct<Ax, typename std::enable_if<
+#if defined(_CPPLIB_VER) && _CPPLIB_VER >= 650
+		std::_Uses_default_construct<Ax, typename std::allocator_traits<Ax>::pointer>::value
+#else
+		is_same_value<void(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::pointer), &Ax::construct, &std::allocator<typename std::allocator_traits<Ax>::value_type>::construct>::value
+#endif
+		, void>::type> : std::true_type { };
+
+	template<class Ax, class = void> struct uses_default_copy_construct : std::false_type { };
+	template<class Ax> struct uses_default_copy_construct<Ax, typename std::enable_if<
+#if defined(_CPPLIB_VER) && _CPPLIB_VER >= 650
+		std::_Uses_default_construct<Ax, typename std::allocator_traits<Ax>::pointer, typename std::allocator_traits<Ax>::value_type const &>::value
+#else
+		is_same_value<void(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::pointer, typename std::allocator_traits<Ax>::value_type const &), &Ax::construct, &std::allocator<typename std::allocator_traits<Ax>::value_type>::construct>::value
+#endif
+		, void>::type> : std::true_type { };
+
+	template<class Ax, class = void> struct uses_default_destroy : std::false_type { };
+	template<class Ax> struct uses_default_destroy<Ax, typename std::enable_if<
+#if defined(_CPPLIB_VER) && _CPPLIB_VER >= 650
+		std::_Uses_default_destroy<Ax, typename std::allocator_traits<Ax>::pointer>::value
+#else
+		is_same_value<void(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::pointer), &Ax::destroy, &std::allocator<typename std::allocator_traits<Ax>::value_type>::destroy>::value
+#endif
+		, void>::type> : std::true_type { };
 
 	template<class Ax>
 	struct allocator_traits : public std::allocator_traits<Ax>
@@ -323,7 +358,7 @@ namespace detail
 		void pop_front() { this->_begin = this->_end; }
 		iterator begin_back() const { return this->_begin; }
 		iterator end_back() const { return this->_end; }
-		void end_back(iterator const &value) const { this->_end = value; }
+		void end_back(iterator const &value) { this->_end = value; }
 		difference_type back_distance() const { return this->end_back() - this->begin_back(); }
 		void pop_back() { this->_end = this->_begin; }
 	protected:
@@ -338,18 +373,18 @@ namespace detail
 		typedef std::reverse_iterator<typename base_type::iterator> iterator;
 		typedef typename std::iterator_traits<iterator>::difference_type difference_type;
 		iterator_partitioner() = default;
-		explicit iterator_partitioner(base_iterator const &begin, base_iterator const &end) : base_type(begin.base(), end.base()) { }
+		explicit iterator_partitioner(base_iterator const &begin, base_iterator const &end) : base_type(end.base(), begin.base()) { }
 		base_iterator begin() const { return base_iterator(this->base_type::begin()); }
 		base_iterator end() const { return base_iterator(this->base_type::end()); }
 		bool empty() const { return this->base_type::empty(); }
 		iterator begin_front() const { return iterator(this->base_type::end_back()); }
-		void begin_front(iterator const &value) { this->base_type::end_back(value); }
+		void begin_front(iterator const &value) { this->base_type::end_back(value.base()); }
 		iterator end_front() const { return iterator(this->base_type::begin_back()); }
 		difference_type front_distance() const { return this->base_type::front_distance(); }
 		void pop_front() { return this->base_type::pop_back(); }
 		iterator begin_back() const { return iterator(this->base_type::end_front()); }
 		iterator end_back() const { return iterator(this->base_type::begin_front()); }
-		void end_back(iterator const &value) { this->base_type::begin_front(value); }
+		void end_back(iterator const &value) { this->base_type::begin_front(value.base()); }
 		difference_type back_distance() const { return this->base_type::back_distance(); }
 		void pop_back() { return this->base_type::pop_front(); }
 	};
@@ -484,6 +519,100 @@ namespace detail
 		this_type &operator =(this_type const &);
 	};
 
+	class copy_operation
+	{
+	public:
+		template<class InIt, class OutIt>
+		typename std::enable_if<(
+			is_iterator<InIt, std::input_iterator_tag>::value &&
+			(is_iterator<OutIt, std::output_iterator_tag>::value || is_iterator<OutIt, std::bidirectional_iterator_tag>::value)
+			), void>::type single(InIt &input, OutIt &output)
+		{ *output = *input; ++output; ++input; }
+
+		template<class InIt, class OutIt>
+		typename std::enable_if<(
+			is_iterator<InIt, std::input_iterator_tag>::value &&
+			(is_iterator<OutIt, std::output_iterator_tag>::value || is_iterator<OutIt, std::bidirectional_iterator_tag>::value)
+			), OutIt>::type multiple(InIt &&i, InIt const &j, OutIt &&out)
+		{ return std::copy(std::forward<InIt>(i), j, std::forward<OutIt>(out)); }
+	};
+	
+	class move_operation
+	{
+	public:
+		template<class InIt, class OutIt>
+		typename std::enable_if<(
+			is_iterator<InIt, std::input_iterator_tag>::value &&
+			(is_iterator<OutIt, std::output_iterator_tag>::value || is_iterator<OutIt, std::bidirectional_iterator_tag>::value)
+			), void>::type single(InIt &input, OutIt &output)
+		{ *output = std::move(*input); ++output; ++input; }
+
+		template<class InIt, class OutIt>
+		typename std::enable_if<(
+			is_iterator<InIt, std::input_iterator_tag>::value &&
+			(is_iterator<OutIt, std::output_iterator_tag>::value || is_iterator<OutIt, std::bidirectional_iterator_tag>::value)
+			), OutIt>::type multiple(InIt &&i, InIt const &j, OutIt &&out)
+		{ return std::move(std::forward<InIt>(i), j, std::forward<OutIt>(out)); }
+	};
+
+	template<class Ax>
+	class uninitialized_copy_operation : private Ax
+	{
+		typedef allocator_traits<Ax> traits_type;
+		Ax &allocator() { return *this; }
+	public:
+		explicit uninitialized_copy_operation(Ax const &ax) : Ax(ax) { }
+		template<class InIt, class OutIt>
+		typename std::enable_if<(
+			is_iterator<InIt, std::input_iterator_tag>::value &&
+			(is_iterator<OutIt, std::output_iterator_tag>::value || is_iterator<OutIt, std::bidirectional_iterator_tag>::value)
+			), void>::type single(InIt &input, OutIt &output)
+		{
+			traits_type::construct(this->allocator(), traits_type::address(this->allocator(), *output), *input);
+			++output;
+			++input;
+		}
+		template<class InIt, class OutIt>
+		typename std::enable_if<(
+			(
+				uses_default_value_construct<Ax>::value &&std::is_trivially_default_constructible<typename allocator_traits<Ax>::value_type>::value &&
+				uses_default_copy_construct<Ax>::value &&std::is_trivially_copyable<typename allocator_traits<Ax>::value_type>::value &&
+				uses_default_destroy<Ax>::value &&std::is_trivially_destructible<Ax>::value
+			) &&
+			is_iterator<InIt, std::bidirectional_iterator_tag>::value &&
+			(is_iterator<OutIt, std::output_iterator_tag>::value || is_iterator<OutIt, std::bidirectional_iterator_tag>::value)
+			), OutIt>::type multiple(std::reverse_iterator<InIt> begin, std::reverse_iterator<InIt> end, OutIt out)
+		{
+			return std::reverse_copy(end.base(), begin.base(), out);
+		}
+		template<class InIt, class OutIt>
+		typename std::enable_if<(
+			is_iterator<InIt, std::input_iterator_tag>::value &&
+			(is_iterator<OutIt, std::output_iterator_tag>::value || is_iterator<OutIt, std::bidirectional_iterator_tag>::value)
+			), OutIt>::type multiple(InIt begin, InIt end, OutIt out)
+		{
+#if defined(_CPPLIB_VER)
+#if defined(_CPPLIB_VER) && _CPPLIB_VER <= 650 && !defined(_MSVC_STL_VERSION)
+			typename std::conditional<is_defined<std::_Wrap_alloc<Ax> >::value, std::_Wrap_alloc<Ax>, Ax &>::type
+
+#else
+			Ax &
+#endif
+				wrap_ax(this->allocator());
+			out = std::_Uninitialized_copy(std::forward<InIt>(begin), std::forward<InIt>(end), std::forward<OutIt>(out), wrap_ax);
+#else
+			// PERF: Optimize allocator-aware uninitialized_copy() for POD
+			initialization_guard<Ax, OutIt> guard(this->allocator(), std::forward<OutIt>(out));
+			for (; begin != end; ++begin)
+			{
+				guard.emplace_back(*begin);
+			}
+			out = guard.release();
+#endif
+			return out;
+		}
+	};
+
 	template<class FwdIt>
 	class safe_move_or_copy_construction
 	{
@@ -576,11 +705,17 @@ namespace detail
 	}
 
 	template<class Ax, class OutIt>
-	OutIt uninitialized_value_construct(OutIt const &begin, OutIt end, Ax &ax)
+	OutIt uninitialized_value_construct(OutIt begin, typename allocator_traits<Ax>::size_type n, Ax &ax)
 	{
-		initialization_guard<Ax, OutIt> guard(ax, begin);
-		while (guard.i != end) { guard.emplace_back(); }
-		return guard.release();
+#if defined(_CPPLIB_VER) && _CPPLIB_VER == 650 && defined(_MSVC_STL_VERSION) && 141 <= _MSVC_STL_VERSION && _MSVC_STL_VERSION <= 142
+		begin = std::_Uninitialized_value_construct_n(std::forward<OutIt>(begin), n, ax);
+#else
+		// PERF: Optimize allocator-aware uninitialized_value_construct() for POD
+		initialization_guard<Ax, OutIt> guard(ax, std::forward<OutIt>(begin));
+		while (n) { guard.emplace_back(); --n; }
+		begin = guard.release();
+#endif
+		return begin;
 	}
 
 	template<class Ax>
@@ -755,137 +890,75 @@ namespace detail
 		detail::reverse(begin, end, ax);
 	}
 
-	template<class InIt, class OutIt, class Diff>
-	typename std::enable_if<(
+	template<class InIt, class OutIt, class BinOp>
+	typename std::enable_if<
 		detail::is_iterator<InIt, std::input_iterator_tag>::value &&
-		!detail::is_iterator<InIt, std::forward_iterator_tag>::value &&
-		detail::is_iterator<OutIt, std::output_iterator_tag>::value &&
-		!detail::is_iterator<OutIt, std::forward_iterator_tag>::value
-		), std::pair<InIt, OutIt> >::type copy_limited(InIt input_begin, InIt input_end, OutIt output_begin, OutIt output_end, Diff nmax = ~Diff())
-	{
-		std::pair<InIt, OutIt> result(std::forward<InIt>(input_begin), std::forward<OutIt>(output_begin));
-		for (; nmax && result.first != input_end && result.second != output_end; (void)++result.first, (void)++result.second, --nmax)
-		{
-			*result.second = *result.first;
-		}
-		return result;
-	}
-
-	template<class InIt, class OutIt, class Diff>
-	typename std::enable_if<(
+		(detail::is_iterator<OutIt, std::output_iterator_tag>::value || detail::is_iterator<OutIt, std::bidirectional_iterator_tag>::value) && !(
 		detail::is_iterator<InIt, std::forward_iterator_tag>::value &&
-		detail::is_iterator<OutIt, std::output_iterator_tag>::value &&
-		!detail::is_iterator<OutIt, std::forward_iterator_tag>::value
-		), std::pair<InIt, OutIt> >::type copy_limited(InIt input_begin, InIt input_end, OutIt output_begin, OutIt output_end, Diff nmax = ~Diff())
-	{
-		{
-			typename std::iterator_traits<InIt>::difference_type const d1 = std::distance<InIt>(input_begin, input_end);
-			if (nmax == ~Diff() || d1 < nmax) { nmax = static_cast<Diff>(d1); }
-			assert(nmax != ~Diff());
-			if (nmax < d1) { input_end = input_begin; std::advance<InIt>(input_end, static_cast<typename std::iterator_traits<InIt>::difference_type>(nmax)); }
-		}
-		std::pair<InIt, OutIt> result(std::forward<InIt>(input_begin), std::forward<OutIt>(output_begin));
-		for (; nmax && result.second != output_end; (void)++result.first, (void)++result.second, --nmax)
-		{
-			*result.second = *result.first;
-		}
-		return result;
-	}
-
-	template<class InIt, class OutIt, class Diff>
-	typename std::enable_if<(
-		detail::is_iterator<InIt, std::input_iterator_tag>::value &&
-		!detail::is_iterator<InIt, std::forward_iterator_tag>::value &&
 		detail::is_iterator<OutIt, std::forward_iterator_tag>::value
-		), std::pair<InIt, OutIt> >::type copy_limited(InIt input_begin, InIt input_end, OutIt output_begin, OutIt output_end, Diff nmax = ~Diff())
+		), std::pair<InIt, OutIt> >::type operate_limited(InIt input_begin, InIt input_end, OutIt output_begin, OutIt output_end, BinOp binop)
 	{
-		{
-			typename std::iterator_traits<OutIt>::difference_type const d2 = std::distance<OutIt>(output_begin, output_end);
-			if (nmax == ~Diff() || d2 < nmax) { nmax = static_cast<Diff>(d2); }
-			assert(nmax != ~Diff());
-			if (nmax < d2) { output_end = output_begin; std::advance<OutIt>(output_end, static_cast<typename std::iterator_traits<OutIt>::difference_type>(nmax)); }
-		}
 		std::pair<InIt, OutIt> result(std::forward<InIt>(input_begin), std::forward<OutIt>(output_begin));
-		for (; nmax && result.first != input_end; (void)++result.first, (void)++result.second, --nmax)
+		for (; result.first != input_end && result.second != output_end; )
 		{
-			*result.second = *result.first;
+			binop.single(result.first, result.second);
 		}
 		return result;
 	}
 
-	template<class InIt, class OutIt, class Diff>
+	template<class InIt, class OutIt, class BinOp>
 	typename std::enable_if<(
 		detail::is_iterator<InIt, std::forward_iterator_tag>::value &&
 		detail::is_iterator<OutIt, std::forward_iterator_tag>::value
-		), std::pair<InIt, OutIt> >::type copy_limited(InIt input_begin, InIt input_end, OutIt output_begin, OutIt output_end, Diff nmax = ~Diff())
+		), std::pair<InIt, OutIt> >::type operate_limited(InIt input_begin, InIt input_end, OutIt output_begin, OutIt output_end, BinOp binop)
 	{
 		{
 			typename std::iterator_traits<InIt>::difference_type const d1 = std::distance<InIt>(input_begin, input_end);
 			typename std::iterator_traits<OutIt>::difference_type const d2 = std::distance<OutIt>(output_begin, output_end);
-			if (nmax == ~Diff() || d1 < nmax) { nmax = static_cast<Diff>(d1); }
-			if (nmax == ~Diff() || d2 < nmax) { nmax = static_cast<Diff>(d2); }
-			assert(nmax != ~Diff());
-			if (nmax < d1) { input_end = input_begin; std::advance<InIt>(input_end, static_cast<typename std::iterator_traits<InIt>::difference_type>(nmax)); }
-			if (nmax < d2) { output_end = output_begin; std::advance<OutIt>(output_end, static_cast<typename std::iterator_traits<OutIt>::difference_type>(nmax)); }
+			if (d2 < d1) { input_end = input_begin; std::advance<InIt>(input_end, static_cast<typename std::iterator_traits<InIt>::difference_type>(d2)); }
+			if (d1 < d2) { output_end = output_begin; std::advance<OutIt>(output_end, static_cast<typename std::iterator_traits<OutIt>::difference_type>(d1)); }
 		}
 		std::pair<InIt, OutIt> result(std::forward<InIt>(input_end), std::forward<OutIt>(output_begin));
-		result.second = std::copy(std::forward<InIt>(input_begin), result.first, std::forward<OutIt>(result.second));
+		result.second = binop.multiple(std::forward<InIt>(input_begin), result.first, std::forward<OutIt>(result.second));
 		return result;
 	}
 
-	template<class InIt, class OutIt>
+	template<class InIt, class OutIt, class BinOp>
 	typename std::enable_if<(
-		detail::is_iterator<InIt, std::input_iterator_tag>::value
-		), std::pair<InIt, OutIt> >::type partitioned_copy_limited(InIt input_begin, InIt input_end, OutIt output_begin, OutIt output_end)
+		detail::is_iterator<InIt, std::input_iterator_tag>::value &&
+		(detail::is_iterator<OutIt, std::output_iterator_tag>::value || detail::is_iterator<OutIt, std::bidirectional_iterator_tag>::value)
+		), std::pair<InIt, OutIt> >::type partitioned_operate_limited(InIt input_begin, InIt input_end, OutIt output_begin, OutIt output_end, BinOp binop)
 	{
 		iterator_partitioner<InIt> input_parts(input_begin, input_end);
 		iterator_partitioner<OutIt> output_parts(output_begin, output_end);
 		while (!input_parts.empty() && !output_parts.empty())
 		{
-			std::pair<typename iterator_partitioner<InIt>::iterator, typename iterator_partitioner<OutIt>::iterator> limits = detail::copy_limited(
+			std::pair<typename iterator_partitioner<InIt>::iterator, typename iterator_partitioner<OutIt>::iterator> limits = detail::operate_limited(
 				input_parts.begin_front(), input_parts.end_front(),
 				output_parts.begin_front(), output_parts.end_front(),
-				~typename std::iterator_traits<OutIt>::difference_type());
+				binop);
 			if (limits.first == input_parts.end_front()) { input_parts.pop_front(); } else { input_parts.begin_front(limits.first); }
 			if (limits.second == output_parts.end_front()) { output_parts.pop_front(); } else { output_parts.begin_front(limits.second); }
 		}
 		return std::pair<InIt, OutIt>(input_parts.begin(), output_parts.begin());
 	}
 
-	template<class Ax, class InIt, class OutIt>
+	template<class InIt, class OutIt>
 	typename std::enable_if<(
-		detail::is_iterator<InIt, std::input_iterator_tag>::value
-		), OutIt>::type uninitialized_copy(InIt begin, InIt end, OutIt const &out, Ax &ax)
+		detail::is_iterator<InIt, std::input_iterator_tag>::value &&
+		(detail::is_iterator<OutIt, std::output_iterator_tag>::value || detail::is_iterator<OutIt, std::bidirectional_iterator_tag>::value)
+		), std::pair<InIt, OutIt> >::type partitioned_copy_limited(InIt input_begin, InIt input_end, OutIt output_begin, OutIt output_end)
 	{
-		initialization_guard<Ax, OutIt> guard(ax, out);
-		for (; begin != end; ++begin)
-		{
-			guard.emplace_back(*begin);
-		}
-		return guard.release();
+		return detail::partitioned_operate_limited(std::forward<InIt>(input_begin), std::forward<InIt>(input_end), std::forward<OutIt>(output_begin), std::forward<OutIt>(output_end), copy_operation());
 	}
 
-	template<class Ax, class InIt, class OutIt>
+	template<class InIt, class OutIt>
 	typename std::enable_if<(
-		detail::is_iterator<InIt, std::forward_iterator_tag>::value
-		), std::pair<InIt, OutIt> >::type uninitialized_copy_up_to_n(InIt begin, InIt end, typename std::iterator_traits<InIt>::difference_type nmax, OutIt out, Ax &ax)
+		detail::is_iterator<InIt, std::input_iterator_tag>::value &&
+		(detail::is_iterator<OutIt, std::output_iterator_tag>::value || detail::is_iterator<OutIt, std::bidirectional_iterator_tag>::value)
+		), std::pair<InIt, OutIt> >::type partitioned_move_limited(InIt input_begin, InIt input_end, OutIt output_begin, OutIt output_end)
 	{
-		if (nmax < std::distance<InIt>(begin, end)) { end = begin; std::advance<InIt>(end, nmax); }
-		return std::make_pair(end, detail::uninitialized_copy(std::forward<InIt>(begin), std::forward<InIt>(end), std::forward<OutIt>(out), ax));
-	}
-
-	template<class Ax, class InIt, class OutIt>
-	typename std::enable_if<
-		detail::is_iterator<InIt, std::input_iterator_tag>::value
-		&& !detail::is_iterator<InIt, std::forward_iterator_tag>::value
-		, std::pair<InIt, OutIt> >::type uninitialized_copy_up_to_n(InIt begin, InIt end, typename std::iterator_traits<InIt>::difference_type nmax, OutIt const &out, Ax &ax)
-	{
-		initialization_guard<Ax, OutIt> guard(ax, out);
-		for (; nmax && begin != end; (void)++begin, --nmax)
-		{
-			guard.emplace_back(*begin);
-		}
-		return std::pair<InIt, OutIt>(std::move(begin), guard.release());
+		return detail::partitioned_operate_limited(std::forward<InIt>(input_begin), std::forward<InIt>(input_end), std::forward<OutIt>(output_begin), std::forward<OutIt>(output_end), move_operation());
 	}
 }
 
@@ -1189,6 +1262,15 @@ private:
 
 template<class T, class Pointer = T *, class Reference = T &, class Bucket = stationary_vector_bucket<T *> >
 struct stationary_vector_iterator
+#if defined(_UTILITY_) && !defined(_CPPLIB_VER)
+: std::iterator<
+	std::random_access_iterator_tag,
+	T,
+	typename Bucket::difference_type,
+	Pointer,
+	Reference
+>
+#endif
 {
 	typedef stationary_vector_iterator this_type;
 	typedef std::random_access_iterator_tag iterator_category;
@@ -1441,9 +1523,9 @@ public:
 		assert(this->capacity() == 0);
 	}
 	stationary_vector(this_type const &other)
-		: stationary_vector(static_cast<this_type const &>(other), static_cast<allocator_type const &>(allocator_traits::select_on_container_copy_construction(other.allocator()))) { }
-	stationary_vector(this_type const &other, allocator_type const &ax) : stationary_vector(ax) { this->initialize<const_iterator>(other.begin(), other.end()); }
-	stationary_vector(this_type &&other) noexcept(true) : stationary_vector(std::move(other.allocator()), std::integral_constant<bool, true>())
+		: stationary_vector(static_cast<void const *>(NULL), static_cast<void const *>(NULL), static_cast<this_type const &>(other), static_cast<allocator_type const &>(allocator_traits::select_on_container_copy_construction(other.allocator()))) { }
+	stationary_vector(this_type const &other, allocator_type const &ax) : stationary_vector(static_cast<void const *>(NULL), static_cast<void const *>(NULL), other, ax) { }
+	stationary_vector(this_type &&other) noexcept(true) : stationary_vector(static_cast<void const *>(NULL), static_cast<void const *>(NULL), std::move(other.allocator()), std::integral_constant<bool, true>())
 	{
 		// We can't call the move-with-allocator overload due to the noexcept specification on this one being stronger
 		this->do_init(std::move(other), std::integral_constant<int, 2>());
@@ -1453,7 +1535,7 @@ public:
 		this->do_init(std::move(other), std::integral_constant<int, allocator_traits::is_always_equal::value ? 2 : 1>());
 	}
 	stationary_vector() noexcept(std::is_nothrow_default_constructible<allocator_type>::value) : stationary_vector(allocator_type()) { }
-	explicit stationary_vector(allocator_type const &ax) noexcept(true) : stationary_vector(ax, std::integral_constant<bool, false>()) { }
+	explicit stationary_vector(allocator_type const &ax) noexcept(true) : stationary_vector(static_cast<void const *>(NULL), static_cast<void const *>(NULL), ax, std::integral_constant<bool, false>()) { }
 	stationary_vector(std::initializer_list<value_type> items, allocator_type const &ax = allocator_type()) : stationary_vector(items.begin(), items.end(), ax) { }
 	template<class It>
 	explicit stationary_vector(It begin, size_type n, typename std::enable_if<
@@ -1520,9 +1602,10 @@ public:
 		typedef detail::iterator_partitioner<It> Partitioner;
 		if (i.p)
 		{
+			detail::uninitialized_copy_operation<allocator_type> op(this->allocator());
 			for (Partitioner parts(begin, end); !parts.empty() && i.p != i.b->items_end(); i.p == i.b->items_end() ? (void)(i.p = (++i.b)->items_begin()) : void())
 			{
-				std::pair<typename Partitioner::iterator, pointer> endpoint = detail::uninitialized_copy_up_to_n(parts.begin_front(), parts.end_front(), i.b->items_end() - i.p, i.p, this->allocator());
+				std::pair<typename Partitioner::iterator, pointer> endpoint = detail::operate_limited(parts.begin_front(), parts.end_front(), i.p, i.b->items_end(), op);
 				this->outer.size += static_cast<size_type>(endpoint.second - i.p);
 				i.p = endpoint.second;
 				if (endpoint.first != parts.end_front())
@@ -1548,7 +1631,7 @@ public:
 				typename std::iterator_traits<It>::difference_type d = is_forward_iterator ? std::distance(begin, end) : typename std::iterator_traits<It>::difference_type();
 				this->reserve(this->size() + (d ? static_cast<size_type>(d) : static_cast<size_type>(1)));
 			}
-			begin = this->append_up_to_reallocation(begin, end);
+			begin = this->append_up_to_reallocation<It>(begin, end);
 			assert(begin == end || this->size() == this->capacity());
 		}
 	}
@@ -1635,7 +1718,7 @@ public:
 		{
 			pointer p_end = i.b->items_end();
 			if (p_end - i.p > static_cast<difference_type>(n)) { p_end = i.p; p_end += static_cast<difference_type>(n); }
-			detail::uninitialized_value_construct(i.p, p_end, this->allocator());
+			detail::uninitialized_value_construct(i.p, static_cast<size_type>(p_end - i.p), this->allocator());
 			size_type const delta = static_cast<size_type>(p_end - i.p);
 			this->outer.size += delta;
 			n -= delta;
@@ -1660,8 +1743,7 @@ public:
 		{
 			bool const is_end = this->is_at_end(end);
 			iterator my_end = this->end(), my_new_end = my_end; my_new_end -= d;
-			typedef std::move_iterator<iterator> MoveIt;
-			detail::partitioned_copy_limited(MoveIt(end), MoveIt(my_end), begin, my_new_end);
+			detail::partitioned_move_limited(end, my_end, begin, my_new_end);
 			this->pop_back_n(static_cast<size_type>(d));
 			if (is_end) { begin = this->end(); }
 			end = begin;
@@ -1996,8 +2078,7 @@ public:
 		size_type const m = this->size();
 		if (m < n)
 		{
-			auto p = static_cast<this_type & (this_type:: *)(size_type reps, value_type const &value)>(&this_type::append);
-			(this->*p)(n - m, value);
+			this->append(n - m, value);
 		}
 		else
 		{
@@ -2237,8 +2318,10 @@ private:
 	payload_type const volatile &payload() const volatile { return this->outer.inner; }
 	allocator_type       &allocator()       { return this->outer.allocator(); }
 	allocator_type const &allocator() const { return this->outer.allocator(); }
+	stationary_vector(void const *, void const *, this_type const &other, allocator_type const &ax) : stationary_vector(ax) { this->initialize<const_iterator>(other.begin(), other.end()); }
 	template<bool Move>
-	explicit stationary_vector(typename std::conditional<Move, allocator_type &&, allocator_type const &>::type ax, std::integral_constant<bool, Move>) noexcept(true) : outer(std::move(ax)) { }
+	explicit stationary_vector(void const *, void const *, typename std::conditional<Move, allocator_type &&, allocator_type const &>::type ax, std::integral_constant<bool, Move>) noexcept(true)
+		: outer(static_cast<typename std::conditional<Move, allocator_type &&, allocator_type const &>::type>(ax)) { }
 };
 
 #if __cplusplus >= 202002L || defined(__cpp_deduction_guides)
