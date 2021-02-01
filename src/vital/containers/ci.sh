@@ -30,6 +30,7 @@ ci_install() {
 	if ! command -v      g++ > /dev/null; then packages+=(gcc     ); fi
 	if ! command -v  clang++ > /dev/null; then packages+=(clang   ); fi
 	packages+=(libc++-dev libc++abi-dev)
+	sudo apt-get update
 	sudo apt-get install -qq -o=Dpkg::Use-Pty=0 -- "${packages[@]}"
 }
 
