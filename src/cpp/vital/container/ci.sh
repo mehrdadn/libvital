@@ -35,6 +35,7 @@ ci_install() {
 }
 
 ci_before_script() {
+	local include_directory="${BASH_SOURCE[0]}"; include_directory="${include_directory%/*}"; if [ -z "${include_directory}" ]; then include_directory="."; fi
 	local srcdir="ext/libstdc++-v3/testsuite/23_containers/vector"
 	local findargs=(
 		-not -name "pmr*.cc"
@@ -81,9 +82,9 @@ ci_before_script() {
 		-not -path "${srcdir}/58764.cc"
 		-not -path "${srcdir}/26412-2.cc"
 	)
-	find "ext/msvc-stl/tests/tr1/tests/vector"             -xdev -name "*.cpp"                                        -exec  clang++                                                   -ggdb3 -std=c++20 -iquote "include" -isystem "ext/msvc-stl/tests/tr1/include"  -o "{}.out" "{}" \;
-	find "ext/libcxx/test/std/containers/sequences/vector" -xdev -name "*.cpp"                  -not -name "*.fail.*" -exec  clang++ -stdlib=libc++                                    -ggdb3 -std=c++20 -iquote "include" -isystem "ext/libcxx/test/support"         -o "{}.out" "{}" \;
-	find "${srcdir}"                                       -xdev -name "*.cc"  "${findargs[@]}" -not -name  "*_neg.*" -exec      g++ -include "src/vital/containers/libstdc++.inc.hpp" -ggdb3 -std=c++2a -iquote "include" -isystem "ext/libstdc++-v3/testsuite/util" -o "{}.out" "{}" \;
+	find "ext/msvc-stl/tests/tr1/tests/vector"             -xdev -name "*.cpp"                                        -exec  clang++                                                   -ggdb3 -std=c++20 -iquote "include/cpp" -isystem "ext/msvc-stl/tests/tr1/include"  -o "{}.out" "{}" \;
+	find "ext/libcxx/test/std/containers/sequences/vector" -xdev -name "*.cpp"                  -not -name "*.fail.*" -exec  clang++ -stdlib=libc++                                    -ggdb3 -std=c++20 -iquote "include/cpp" -isystem "ext/libcxx/test/support"         -o "{}.out" "{}" \;
+	find "${srcdir}"                                       -xdev -name "*.cc"  "${findargs[@]}" -not -name  "*_neg.*" -exec      g++ -include "${include_directory}/libstdc++.inc.hpp" -ggdb3 -std=c++2a -iquote "include/cpp" -isystem "ext/libstdc++-v3/testsuite/util" -o "{}.out" "{}" \;
 }
 
 ci_script() {
