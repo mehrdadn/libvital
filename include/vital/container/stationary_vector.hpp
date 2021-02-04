@@ -126,47 +126,28 @@ namespace detail
 	But the POD optimizations are too important to disregard. Users should just avoid specializing allocator types and instead provide custom classes.
 	*/
 
-	template<class Ax, class = void> struct uses_default_allocate_nohint : std::false_type { };
-	template<class Ax> struct uses_default_allocate_nohint<Ax, typename std::enable_if<
-		is_same_value<typename std::allocator_traits<Ax>::pointer(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::size_type), &Ax::allocate, &std::allocator<typename std::allocator_traits<Ax>::value_type>::allocate>::value,
-		void>::type> : std::true_type { };
-
-	template<class Ax, class = void> struct uses_default_allocate_hint : std::false_type { };
-	template<class Ax> struct uses_default_allocate_hint<Ax, typename std::enable_if<
-		is_same_value<typename std::allocator_traits<Ax>::pointer(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::size_type, typename std::allocator_traits<Ax>::const_void_pointer), &Ax::allocate, &std::allocator<typename std::allocator_traits<Ax>::value_type>::allocate>::value,
-		void>::type> : std::true_type { };
-
-	template<class Ax, class = void> struct uses_default_deallocate : std::false_type { };
-	template<class Ax> struct uses_default_deallocate<Ax, typename std::enable_if<
-		is_same_value<void(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::pointer, typename std::allocator_traits<Ax>::size_type), &Ax::deallocate, &std::allocator<typename std::allocator_traits<Ax>::value_type>::deallocate>::value,
-		void>::type> : std::true_type { };
-
-	template<class Ax, class = void> struct uses_default_value_construct : std::false_type { };
-	template<class Ax> struct uses_default_value_construct<Ax, typename std::enable_if<
+#define X_MEMBER_FUNCTION_DEFAULT_CHECKER(Ax, CheckerName, Name, Params)   \
+	template<class Ax, class = void> struct CheckerName##__detail : std::false_type { };  \
+	template<class Ax> struct CheckerName##__detail<Ax, typename std::enable_if<  \
+		is_same_value<typename std::allocator_traits<Ax>::pointer(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *) Params,  \
+			&Ax::Name,  \
+			&std::allocator<typename std::allocator_traits<Ax>::value_type>::Name  \
+		>::value, void>::type> : std::true_type { };  \
+	template<class Ax> struct CheckerName : CheckerName##__detail<Ax> { };  \
+	template<class T> struct CheckerName<std::allocator<T> > : std::true_type { }
+X_MEMBER_FUNCTION_DEFAULT_CHECKER(Ax, uses_default_allocate_nohint, allocate, (typename std::allocator_traits<Ax>::size_type));
+X_MEMBER_FUNCTION_DEFAULT_CHECKER(Ax, uses_default_allocate_hint, allocate, (typename std::allocator_traits<Ax>::size_type, typename std::allocator_traits<Ax>::const_void_pointer));
+X_MEMBER_FUNCTION_DEFAULT_CHECKER(Ax, uses_default_deallocate, deallocate, (typename std::allocator_traits<Ax>::pointer, typename std::allocator_traits<Ax>::size_type));
 #if defined(_CPPLIB_VER) && _CPPLIB_VER >= 650
-		std::_Uses_default_construct<Ax, typename std::allocator_traits<Ax>::pointer>::value
+template<class Ax> using uses_default_value_construct = std::_Uses_default_construct<Ax, typename std::allocator_traits<Ax>::pointer>;
+template<class Ax> using uses_default_copy_construct = std::_Uses_default_construct<Ax, typename std::allocator_traits<Ax>::pointer, typename std::allocator_traits<Ax>::value_type const &>;
+template<class Ax> using uses_default_destroy = std::_Uses_default_destroy<Ax, typename std::allocator_traits<Ax>::pointer>;
 #else
-		is_same_value<void(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::pointer), &Ax::construct, &std::allocator<typename std::allocator_traits<Ax>::value_type>::construct>::value
+X_MEMBER_FUNCTION_DEFAULT_CHECKER(Ax, uses_default_value_construct, construct, (typename std::allocator_traits<Ax>::pointer));
+X_MEMBER_FUNCTION_DEFAULT_CHECKER(Ax, uses_default_copy_construct, construct, (typename std::allocator_traits<Ax>::pointer, typename std::allocator_traits<Ax>::value_type const &));
+X_MEMBER_FUNCTION_DEFAULT_CHECKER(Ax, uses_default_destroy, destroy, (typename std::allocator_traits<Ax>::pointer));
 #endif
-		, void>::type> : std::true_type { };
-
-	template<class Ax, class = void> struct uses_default_copy_construct : std::false_type { };
-	template<class Ax> struct uses_default_copy_construct<Ax, typename std::enable_if<
-#if defined(_CPPLIB_VER) && _CPPLIB_VER >= 650
-		std::_Uses_default_construct<Ax, typename std::allocator_traits<Ax>::pointer, typename std::allocator_traits<Ax>::value_type const &>::value
-#else
-		is_same_value<void(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::pointer, typename std::allocator_traits<Ax>::value_type const &), &Ax::construct, &std::allocator<typename std::allocator_traits<Ax>::value_type>::construct>::value
-#endif
-		, void>::type> : std::true_type { };
-
-	template<class Ax, class = void> struct uses_default_destroy : std::false_type { };
-	template<class Ax> struct uses_default_destroy<Ax, typename std::enable_if<
-#if defined(_CPPLIB_VER) && _CPPLIB_VER >= 650
-		std::_Uses_default_destroy<Ax, typename std::allocator_traits<Ax>::pointer>::value
-#else
-		is_same_value<void(std::allocator<typename std::allocator_traits<Ax>::value_type>:: *)(typename std::allocator_traits<Ax>::pointer), &Ax::destroy, &std::allocator<typename std::allocator_traits<Ax>::value_type>::destroy>::value
-#endif
-		, void>::type> : std::true_type { };
+#undef  X_MEMBER_FUNCTION_DEFAULT_CHECKER
 
 	template<class Ax>
 	struct allocator_traits : public std::allocator_traits<Ax>
@@ -204,9 +185,6 @@ namespace detail
 			>::type::invoke(ax);
 		}
 	};
-
-	template<class Ax>
-	struct is_allocator_same_as_malloc;
 
 	template<class Ax>
 	struct is_allocator_same_as_malloc :
