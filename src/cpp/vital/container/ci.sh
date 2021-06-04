@@ -2,6 +2,12 @@
 
 set -euxo pipefail
 
+CLANGPP="clang++-10"
+
+clang++() {
+	"${CLANGPP}" "$@"
+}
+
 ci_install() {
 	mkdir -p -- "ext"
 
@@ -12,25 +18,25 @@ ci_install() {
 	}
 	env -C "ext/msvc-stl" patch --merge --binary -f -s -p1 -i "../patches/msvc-stl.patch"
 
-	local gcc_version; gcc_version="$(g++ --version | sed -n 's/^g++ (\w\+ \([^\-]*\).*/\1/p')"
+	local gcc_version; gcc_version="$(g++ --version | sed -n 's/^\(\w\+ \)*g++ (\w\+ \([^\-]*\).*/\2/p')"
 	local project="gcc"
 	curl -sfL "https://github.com/gcc-mirror/${project}/archive/releases/gcc-${gcc_version}.tar.gz" | {
 		tar -C "ext" --strip-components=1 -xzf - "${project}-releases-gcc-${gcc_version}/libstdc++-v3"
 	}
 	env -C "ext" patch --merge --binary -f -s -p1 -i "patches/libstdc++-v3.patch"
 
-	local clang_version; clang_version="$(clang++ --version | sed -n 's/^clang version \([^\-]*\).*/\1/p')"
+	local clang_version; clang_version="$("${CLANGPP}" --version | sed -n 's/^\(\w\+ \)*clang version \([^\-]*\).*/\2/p')"
 	curl -sfL "https://github.com/llvm/llvm-project/releases/download/llvmorg-${clang_version}/libcxx-${clang_version}.src.tar.xz" | {
 		mkdir -p "ext/libcxx"
 		tar -C "ext/libcxx" --strip-components=1 -xJf - "libcxx-${clang_version}.src"
 	}
 
 	local packages=()
-	if ! command -v valgrind > /dev/null; then packages+=(valgrind); fi
-	if ! command -v      g++ > /dev/null; then packages+=(gcc     ); fi
-	if ! command -v  clang++ > /dev/null; then packages+=(clang   ); fi
+	if ! command -v valgrind     > /dev/null; then packages+=(valgrind); fi
+	if ! command -v      g++     > /dev/null; then packages+=(gcc     ); fi
+	if ! command -v "${CLANGPP}" > /dev/null; then packages+=(clang   ); fi
 	packages+=(libc++-dev libc++abi-dev)
-	sudo apt-get update
+	sudo apt-get update -qq
 	sudo apt-get install -qq -o=Dpkg::Use-Pty=0 -- "${packages[@]}"
 }
 
@@ -82,13 +88,17 @@ ci_before_script() {
 		-not -path "${srcdir}/58764.cc"
 		-not -path "${srcdir}/26412-2.cc"
 	)
-	find "ext/msvc-stl/tests/tr1/tests/vector"             -xdev -name "*.cpp"                                        -exec  clang++                                                   -ggdb3 -std=c++20 -iquote "include/cpp" -isystem "ext/msvc-stl/tests/tr1/include"  -o "{}.out" "{}" \;
-	find "ext/libcxx/test/std/containers/sequences/vector" -xdev -name "*.cpp"                  -not -name "*.fail.*" -exec  clang++ -stdlib=libc++                                    -ggdb3 -std=c++20 -iquote "include/cpp" -isystem "ext/libcxx/test/support"         -o "{}.out" "{}" \;
-	find "${srcdir}"                                       -xdev -name "*.cc"  "${findargs[@]}" -not -name  "*_neg.*" -exec      g++ -include "${include_directory}/libstdc++.inc.hpp" -ggdb3 -std=c++2a -iquote "include/cpp" -isystem "ext/libstdc++-v3/testsuite/util" -o "{}.out" "{}" \;
+	local status=0 item_status
+	local line; while { read -r line; } 2> /dev/null; do "${CLANGPP}"                                                   -ggdb3 -std=c++20 -iquote "include/cpp" -isystem "ext/msvc-stl/tests/tr1/include"  -o "${line}.out" "${line}" || { item_status="$?" && test 0 -ne "${status}" || status="${item_status}"; }; done < <(find "ext/msvc-stl/tests/tr1/tests/vector"             -xdev -name "*.cpp"                                       )
+	local line; while { read -r line; } 2> /dev/null; do "${CLANGPP}" -stdlib=libc++                                    -ggdb3 -std=c++20 -iquote "include/cpp" -isystem "ext/libcxx/test/support"         -o "${line}.out" "${line}" || { item_status="$?" && test 0 -ne "${status}" || status="${item_status}"; }; done < <(find "ext/libcxx/test/std/containers/sequences/vector" -xdev -name "*.cpp"                  -not -name "*.fail.*")
+	local line; while { read -r line; } 2> /dev/null; do        g++   -include "${include_directory}/libstdc++.inc.hpp" -ggdb3 -std=c++2a -iquote "include/cpp" -isystem "ext/libstdc++-v3/testsuite/util" -o "${line}.out" "${line}" || { item_status="$?" && test 0 -ne "${status}" || status="${item_status}"; }; done < <(find "${srcdir}"                                       -xdev -name "*.cc"  "${findargs[@]}" -not -name  "*_neg.*")
+	return "${status}"
 }
 
 ci_script() {
-	find "ext/msvc-stl/tests/tr1/tests/vector" "ext/libcxx/test/std/containers/sequences/vector" "ext/libstdc++-v3/testsuite/23_containers/vector" -xdev -name "*.out" -exec valgrind --leak-check=full --show-leak-kinds=definite --track-origins=yes -q "{}" \;
+	local status=0 item_status
+	local line; while { read -r line; } 2> /dev/null; do valgrind --leak-check=full --show-leak-kinds=definite --track-origins=yes -q "${line}" || { item_status="$?" && test 0 -ne "${status}" || status="${item_status}"; }; done < <(find "ext/msvc-stl/tests/tr1/tests/vector" "ext/libcxx/test/std/containers/sequences/vector" "ext/libstdc++-v3/testsuite/23_containers/vector" -xdev -name "*.out")
+	return "${status}"
 }
 
 if [ 0 -lt "$#" ]; then
