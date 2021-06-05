@@ -47,6 +47,8 @@ ci_before_script() {
 		-not -name "pmr*.cc"
 		-not -path "${srcdir}/40192.cc"
 		-not -path "${srcdir}/bool/*"
+		-not -path "${srcdir}/capacity/8230.cc"  # Doesn't fail fast with power-of-2 allocations
+		-not -path "${srcdir}/capacity/resize/1.cc"  # Doesn't fail fast with power-of-2 allocations
 		-not -path "${srcdir}/cons/89164_c++17.cc"
 		-not -path "${srcdir}/cons/89164.cc"
 		-not -path "${srcdir}/debug/*"

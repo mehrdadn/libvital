@@ -8,6 +8,18 @@ index 9ccebf9f84c..175a30bde99 100644
    a.data();
 +  return 0;
  }
+diff --git a/libstdc++-v3/testsuite/23_containers/vector/allocator/swap.cc b/libstdc++-v3/testsuite/23_containers/vector/allocator/swap.cc
+index ddd3c9096da..90947f18a08 100644
+--- a/libstdc++-v3/testsuite/23_containers/vector/allocator/swap.cc
++++ b/libstdc++-v3/testsuite/23_containers/vector/allocator/swap.cc
+@@ -53,5 +53,5 @@ void test01()
+-  std::swap(v1, v2);
++  using std::swap; swap(v1, v2);
+   VERIFY(1 == v1.get_allocator().get_personality());
+   VERIFY(2 == v2.get_allocator().get_personality());
+   // swap back so assertions in uneq_allocator::deallocate don't fail
+-  std::swap(v1, v2);
++  using std::swap; swap(v1, v2);
 diff --git a/libstdc++-v3/testsuite/23_containers/vector/allocator/default_init.cc b/libstdc++-v3/testsuite/23_containers/vector/allocator/default_init.cc
 index de5ad151230..5b4ae0a6b2f 100644
 --- a/libstdc++-v3/testsuite/23_containers/vector/allocator/default_init.cc

@@ -9,6 +9,13 @@
 #include <cassert>
 #endif
 
+#if !defined(STATIONARY_VECTOR_DEFAULT_GROWTH_MODE)
+// +1 optimizes iterator traversal to O(1) at the expense of potentially excessive discontiguity, by forcing blocks to grow in powers of 2.
+//  0 allows either behavior to be customized at runtime (at a minor performance cost, typically < 20%). The default behavior in this case is unspecified.
+// -1 optimizes for contiguity to allow arbitrarily large blocks, at the expense of making iterator traversal take O(log n) time.
+#define STATIONARY_VECTOR_DEFAULT_GROWTH_MODE +1  // NOTE: Instead of changing this value, consider customizing it via the allocator.
+#endif
+
 #if !defined(STATIONARY_VECTOR_ATOMICS) && (defined(STATIONARY_VECTOR_DEBUG) && ((2 * STATIONARY_VECTOR_DEBUG + 1) - 1))
 #define STATIONARY_VECTOR_ATOMICS 1  // Untested
 #endif
@@ -63,6 +70,39 @@ namespace container
 #endif
 namespace detail
 {
+	template<size_t Value> struct log2 { enum { value = 1 + log2<Value / 2>::value }; };
+	template<> struct log2<1> { enum { value = 0 }; };
+	template<> struct log2<0> { enum { value = ~log2<1>::value }; };
+
+	template<class T> static typename std::enable_if<std::is_unsigned<T>::value, unsigned char>::type bsr(unsigned int *i, T const &value);
+	template<class T> static typename std::enable_if<std::is_unsigned<T>::value, int>::type ilog2(T const &value);
+#if defined(__GNUC__)
+	template<class T> static inline typename std::enable_if<std::is_unsigned<T>::value, unsigned char>::type bsr(unsigned int *i, T const &value) { unsigned char r; if (value) { r = 1; *i = __builtin_log2(value); } else { r = 0; } return r; }
+	template<class T> static inline typename std::enable_if<std::is_unsigned<T>::value, int>::type ilog2(T const &value) { return value ? __builtin_log2(value) : -1; }
+#elif defined(_MSC_VER)
+	template<class T> static inline typename std::enable_if<std::is_unsigned<T>::value, int>::type ilog2(T const &value) { unsigned int i; return static_cast<int>(detail::bsr(&i, value) ? i : -1); }
+#if defined(_M_X64) || defined(_M_AMD64) || defined(_M_IA64)
+	template<> inline unsigned char bsr<unsigned long long>(unsigned int *i, unsigned long long const &value) { return _BitScanReverse64(reinterpret_cast<unsigned long *>(i), value); }
+#endif
+#if defined(_M_X64) || defined(_M_AMD64) || defined(_M_IA64) || defined(_M_IX86)
+	template<> inline unsigned char bsr<unsigned int>(unsigned int *i, unsigned int const &value) { return _BitScanReverse(reinterpret_cast<unsigned long *>(i), value); }
+#endif
+#endif
+
+	template<class It>
+	static void fast_advance(It &i, typename std::iterator_traits<It>::difference_type d)
+	{
+		if (!d) { }
+		else if (d == 1) { ++i; }
+		else if (d == -1) { --i; }
+		else { std::advance(i, d); }
+	}
+
+	inline void throw_length_error(char const *msg)
+	{
+		throw std::length_error(msg);
+	}
+
 #define X_MEMBER_TYPE_DETECTOR(Member) \
 	template<class T, class F, class = void> struct extract_nested_##Member { typedef F type; };  \
 	template<class T, class F> struct extract_nested_##Member<T, F, typename std::conditional<false, typename T::Member, void>::type> { typedef typename T::Member type; }
@@ -80,6 +120,7 @@ namespace detail
 	X_MEMBER_TYPE_DETECTOR(propagate_on_container_copy_assignment);
 	X_MEMBER_TYPE_DETECTOR(propagate_on_container_move_assignment);
 	X_MEMBER_TYPE_DETECTOR(propagate_on_container_swap);
+	X_MEMBER_TYPE_DETECTOR(allocation_growth_mode);
 #undef  X_MEMBER_TYPE_DETECTOR
 
 	template <class, class = void> struct is_defined : std::false_type { };
@@ -155,6 +196,7 @@ X_MEMBER_FUNCTION_DEFAULT_CHECKER(Ax, uses_default_destroy, destroy, (typename s
 		typedef Ax allocator_type;
 		typedef std::allocator_traits<allocator_type> traits_type;
 		typedef typename traits_type::value_type value_type;
+		typedef std::integral_constant<int, (STATIONARY_VECTOR_DEFAULT_GROWTH_MODE)> default_growth_mode;
 #define X(Member, Fallback) typedef typename extract_nested_##Member<traits_type, typename extract_nested_##Member<allocator_type, Fallback>::type>::type Member
 		X(reference, value_type &);
 		X(const_reference, value_type const &);
@@ -167,6 +209,7 @@ X_MEMBER_FUNCTION_DEFAULT_CHECKER(Ax, uses_default_destroy, destroy, (typename s
 		X(void_pointer, void *);
 		X(const_void_pointer, void const *);
 		X(is_always_equal, std::is_empty<allocator_type>);
+		X(allocation_growth_mode, default_growth_mode);
 		X(propagate_on_container_copy_assignment, std::false_type);
 		X(propagate_on_container_move_assignment, std::false_type);
 		X(propagate_on_container_swap, std::false_type);
@@ -984,32 +1027,37 @@ struct stationary_vector_pointer<Pointer, true> : detail::convertible_array_iter
 	bool operator!=(this_type const &other) const { return !this->operator==(other); }
 	this_type operator+ (difference_type d) const { this_type result(*this); result += d; return result; }
 	this_type operator- (difference_type d) const { this_type result(*this); result -= d; return result; }
-	this_type operator-=(difference_type const &delta) { static_cast<base_type &>(*this) -= delta; return *this; }
-	this_type operator+=(difference_type const &delta) { static_cast<base_type &>(*this) += delta; return *this; }
+	this_type &operator-=(difference_type const &delta) { static_cast<base_type &>(*this) -= delta; return *this; }
+	this_type &operator+=(difference_type const &delta) { static_cast<base_type &>(*this) += delta; return *this; }
 	this_type operator--() { --static_cast<base_type &>(*this); return *this; }
 	this_type operator++() { ++static_cast<base_type &>(*this); return *this; }
+	this_type &operator =(Pointer const &other) { return *this += other - *this; }
 	difference_type operator- (this_type const &other) const { return static_cast<base_type const &>(*this) - static_cast<base_type const &>(other); }
 	template<class OtherPointer>
 	difference_type operator- (stationary_vector_pointer<OtherPointer> const &other) const { return this->base() - other.base(); }
 };
 
-template<class Pointer, class Diff = typename std::iterator_traits<Pointer>::difference_type, class Size = size_t>
+template<class Pointer, int GrowthMode = 0, class Diff = typename std::iterator_traits<Pointer>::difference_type, class Size = size_t>
 struct stationary_vector_payload;
 
-template<class Pointer, class Diff = typename std::iterator_traits<Pointer>::difference_type, class Size = size_t>
+template<class Pointer, int GrowthMode = 0, class Diff = typename std::iterator_traits<Pointer>::difference_type, class Size = size_t>
 struct stationary_vector_bucket
 {
 	typedef Pointer pointer;
 	typedef Diff difference_type;
 	typedef Size size_type;
 	typedef stationary_vector_bucket this_type;
-	struct ibegin_less { bool operator()(this_type const &a, this_type const &b) const { return a._ibegin < b._ibegin; } };
+	struct ibegin_less
+	{
+		bool operator()(this_type const &a, size_type const b) const { return a.ibegin() < b; }
+		bool operator()(this_type const volatile &a, size_type const b) const { return a.ibegin() < b; }
+	};
 	pointer items_begin() const { return this->_begin; }
 	pointer items_begin() const volatile { return detail::atomic_traits_of<pointer>::load(&this->_begin); }
 	pointer items_end() const { pointer result = this->items_begin(); result += static_cast<difference_type>(this->bucket_size()); return result; }
 	pointer items_end() const volatile { pointer result = this->items_begin(); result += static_cast<difference_type>(this->bucket_size()); return result; }
-	size_type ibegin() const { return this->_ibegin; }
-	size_type ibegin() const volatile { return detail::atomic_traits_of<size_type>::load(&this->_ibegin); }
+	size_type ibegin() const { return this->_calc_ibegin_from_field(this->_ibegin_and_markers); }
+	size_type ibegin() const volatile { return this->_calc_ibegin_from_field(detail::atomic_traits_of<size_type>::load(&this->_ibegin_and_markers)); }
 	size_type iend() const /* This requires information from the next (adjacent) instance in memory if the pointer is valid! */
 	{
 		size_type const result = (this + !!this->items_begin())->ibegin();
@@ -1018,26 +1066,76 @@ struct stationary_vector_bucket
 		return result;
 	}
 	size_type iend() const volatile { return (this + !!this->items_begin())->ibegin(); }
+	bool pow2_total_marker() const
+	{
+		int r = this_type::static_pow2_mode();
+		return r ? r > 0 : !!(this->_ibegin_and_markers & this->pow2_total_marker_mask());
+	}
+	bool pow2_total_marker() volatile const { return const_cast<this_type const *>(this)->pow2_total_marker() /* TODO: How correct is this? Does it matter for the end() iterator? */; }
+	void pow2_total_marker(bool value)
+	{
+		int r = this_type::static_pow2_mode();
+		if (r) { value = false; }
+		size_type const mask = this->pow2_total_marker_mask();
+		this->_ibegin_and_markers = value ? (this->_ibegin_and_markers | mask) : (this->_ibegin_and_markers & ~mask);
+	}
 	size_type bucket_size() const { return this->iend() - this->ibegin(); }
 	size_type bucket_size() const volatile { return this->iend() - this->ibegin(); }
-protected:  // Don't let outsiders create instances of a single bucket, since adjacent instances depend on each other in memory and this is bug-prone.
+	static size_type max_size() { return this_type::_calc_ibegin_from_field(~size_type()); }
+	static int
+#if defined(__cpp_constexpr)
+		constexpr
+#endif
+		static_pow2_mode()
+	{
+		return GrowthMode;
+	}
+public:  // Don't let outsiders create instances of a single bucket, since adjacent instances depend on each other in memory and this is bug-prone.
 	stationary_vector_bucket() = default;
+	static size_type _calc_ibegin_from_field(size_type field) { return this_type::static_pow2_mode() ? field : (field >> this_type::ibegin_shift()); }
+	static size_type pow2_total_marker_mask() { return this_type::static_pow2_mode() ? size_type() : static_cast<size_type>(1); }
+	static unsigned char ibegin_shift() { return 1; }
 	void items_begin(pointer const p) { this->_begin = p; };
-	void ibegin_add(size_type const value) { this->_ibegin += value; };
-	static this_type create(pointer const b, size_type const ib) { stationary_vector_bucket result = this_type(); result._begin = b; result._ibegin = ib; return result; }
-	friend struct stationary_vector_payload<Pointer, Diff, Size>;
+	void ibegin(size_type const value)
+	{
+		unsigned char const shift = this_type::static_pow2_mode() ? size_type() : this_type::ibegin_shift();
+		this->_ibegin_and_markers = (this->_ibegin_and_markers & ~(static_cast<size_type>(1) << shift)) | (value << shift);
+	}
+	void ibegin_add(size_type const value) { this->ibegin(this->ibegin() + value); }
+	static this_type create(pointer const b, size_type const ib, bool const pow2_total_marker)
+	{
+		stationary_vector_bucket result = this_type();
+		result._begin = b;
+		result.ibegin(ib);
+		result.pow2_total_marker(pow2_total_marker);
+		return result;
+	}
+	friend struct stationary_vector_payload<Pointer, GrowthMode, Diff, Size>;
 	pointer _begin;
-	size_type _ibegin;
+	union
+	{
+		size_type _ibegin_and_markers;
+#if defined(_MSC_VER)  // These are to aid the debugger visualizer; they're not used in the code
+#pragma warning(push)
+#pragma warning(disable: 4201)
+		struct
+		{
+			size_type _markers : 1;
+			size_type _ibegin : sizeof(size_type) * CHAR_BIT - 1;
+		};
+#pragma warning(pop)
+#endif
+	};
 };
 
-template<class Pointer, class Diff, class Size>
+template<class Pointer, int GrowthMode, class Diff, class Size>
 struct stationary_vector_payload
 {
 	typedef stationary_vector_payload this_type;
 	typedef typename std::remove_cv<Pointer>::type pointer;
 	typedef Diff difference_type;
 	typedef Size size_type;
-	typedef stationary_vector_bucket<pointer, Diff, Size> bucket_type;
+	typedef stationary_vector_bucket<pointer, GrowthMode, Diff, Size> bucket_type;
 #if defined(_MSC_VER) && defined(_DEBUG)
 #pragma warning(push)
 #if _MSC_VER >= 1900
@@ -1145,8 +1243,8 @@ struct stationary_vector_payload
 	size_type bucket_ibegin(size_t const i) const volatile { return this->bucket(i).ibegin(); }
 	size_type bucket_iend(size_t const i) const          { return this->bucket(i).iend(); }
 	size_type bucket_iend(size_t const i) const volatile { return this->bucket(i).iend(); }
-	size_t bucket_index(size_t const i) const          { size_t j; for (j = this->bucket_count(); j; --j) { if (this->bucket_ibegin(j) <= i) { break; } } return j; }
-	size_t bucket_index(size_t const i) const volatile { size_t j; for (j = this->bucket_count(); j; --j) { if (this->bucket_ibegin(j) <= i) { break; } } return j; }
+	size_t bucket_index(size_t const i) const { return this_type::bucket_index<bucket_type const>(*this, i); }
+	size_t bucket_index(size_t const i) const volatile { return this_type::bucket_index<bucket_type const volatile>(*this, i); }
 	pointer alloc_begin(size_t const ibucket) const { return this->bucket_begin(ibucket); }
 	pointer alloc_end(size_t const ibucket) const { return this->bucket_end(ibucket); }
 	size_type alloc_size(size_t const ibucket) const { assert(ibucket < this->bucket_count()); return this->bucket_size(ibucket); }
@@ -1162,7 +1260,13 @@ struct stationary_vector_payload
 	}
 	void set_bucket(size_t const ibucket, pointer const bucket_begin, pointer const bucket_end, size_type const bucket_iend)
 	{
-		(void)bucket_iend;
+		/*
+		TODO:
+		- Update pow2_marker for the set bucket and all subsequent buckets. (Cuts 32-bit to 2^31 elements max.)
+		- Make max_size() return a correct value (especially for 32-bit).
+		- Tell the user that, on 32-bit systems, this restricts 'char' and 'short'/'wchar_t' allocations to 2^30, and they should use a larger type if needed.
+		*/
+		(void)bucket_end;
 		assert(bucket_begin != bucket_end);
 		bucket_type *const bucket = this->bucket_address(ibucket);
 		size_t bucket_count = this->bucket_count();
@@ -1170,13 +1274,14 @@ struct stationary_vector_payload
 		assert(ibucket < bucket_count || !this->bucket_end(ibucket));
 		if (bucket_count <= ibucket && ibucket + 1 < static_bucket_capacity)
 		{
-			this->construct_bucket(ibucket + 1, bucket_type::create(pointer(), bucket_iend));
+			// Construct the bucket AFTER the one we want to set, to ensure the end iterator can function correctly.
+			this->construct_bucket(ibucket + 1, bucket_type::create(pointer(), bucket_iend, bucket->pow2_total_marker()));
 		}
 		assert(!bucket->items_begin() && bucket->ibegin() == bucket_iend - static_cast<size_type>(bucket_end - bucket_begin));
 		bucket->items_begin(bucket_begin) /* only set the field that's being actually changing (the others should be untouched, for multithreading) */;
 		if (ibucket + 1 >= bucket_count) { ++this->members.nbuckets; }
 	}
-	void append(this_type &&other)
+	void splice_buckets(this_type &&other)
 	{
 		size_t ibucket = this->bucket_count();
 		size_type iend = this->bucket_iend(ibucket);
@@ -1206,11 +1311,76 @@ struct stationary_vector_payload
 		using std::swap; swap(this->members, other.members);
 	}
 	friend void swap(this_type &a, this_type &b) { return a.swap(b); }
+	struct traits_type
+	{
+		enum
+		{
+			initial_bucket_size = static_cast<size_type>(1) << detail::log2<(
+#if !defined(_DEBUG) && defined(NDEBUG) && !(defined(STATIONARY_VECTOR_DEBUG) && ((2 * STATIONARY_VECTOR_DEBUG + 1) - 1))
+				(sizeof(this_type) + sizeof(typename std::iterator_traits<pointer>::value_type) - 1) / sizeof(typename std::iterator_traits<pointer>::value_type) /* Performance optimization to allocate at least as much as the size of the vector */
+#else
+				static_cast<size_type>(1)
+#endif
+				) * 2 - 1>::value
+		};
+	};
 private:
 	bucket_type                &bucket(size_t const ibucket)                { return *this->bucket_address(ibucket); }
 	bucket_type const          &bucket(size_t const ibucket) const          { return *this->bucket_address(ibucket); }
 	bucket_type       volatile &bucket(size_t const ibucket)       volatile { return *this->bucket_address(ibucket); }
 	bucket_type const volatile &bucket(size_t const ibucket) const volatile { return *this->bucket_address(ibucket); }
+	template<class Bucket, class Me>
+	static size_t bucket_index_slow(Me &me, size_t const i)
+	{
+		size_t const nbuckets = me.bucket_count();
+		size_t j;
+		for (j = nbuckets; j; --j)
+		{
+			if (me.bucket_ibegin(j) <= i)
+			{
+				break;
+			}
+			if (i <= (static_cast<size_t>(1) << (nbuckets - j)))
+			{
+				if (!~i) /* Dummy condition (never executed) just to discourage inlining of this function and encourage inlining its caller */
+				{
+					return bucket_index_slow<Bucket, Me>(me, i ^ nbuckets);
+				}
+				Bucket *bucket0 = me.bucket_address(0), *b = bucket0;
+				b = std::lower_bound(bucket0, me.bucket_address(nbuckets), i, typename bucket_type::ibegin_less());
+				if (b->ibegin() > i) { --b; }
+				j = static_cast<size_t>(b - bucket0);
+				break;
+			}
+		}
+		return j;
+	}
+	template<class Bucket, class Me>
+	static size_t bucket_index(Me &me, size_t const i)
+	{
+		size_t j;
+		if (me.bucket_address(0)->pow2_total_marker())
+		{
+			enum { initial_bucket_size = this_type::traits_type::initial_bucket_size, initial_bucket_size_log2 = detail::log2<initial_bucket_size>::value };
+			assert(initial_bucket_size == (static_cast<size_type>(1) << initial_bucket_size_log2));
+			unsigned int k;
+			if (detail::bsr<size_t>(&k, i >> initial_bucket_size_log2))
+			{
+				size_t const nbuckets = me.bucket_count();
+				if (static_cast<ptrdiff_t>(k) < static_cast<ptrdiff_t>(nbuckets) - 1)
+				{
+					j = static_cast<size_t>(k) + 1;
+				}
+				else { j = nbuckets; }
+			}
+			else { j = 0; }
+		}
+		else
+		{
+			j = this_type::bucket_index_slow<Bucket, Me>(me, i);
+		}
+		return j;
+	}
 	void destroy_bucket(size_t const ibucket)
 	{
 #ifdef _DEBUG
@@ -1238,7 +1408,7 @@ private:
 	this_type &operator =(this_type other);
 };
 
-template<class T, class Pointer = T *, class Reference = T &, class Bucket = stationary_vector_bucket<T *> >
+template<class T, int GrowthMode = 0, class Pointer = T *, class Reference = T &, class Bucket = stationary_vector_bucket<T *> >
 struct stationary_vector_iterator
 #if defined(_UTILITY_) && !defined(_CPPLIB_VER)
 : std::iterator<
@@ -1261,8 +1431,9 @@ struct stationary_vector_iterator
 	typedef bucket_type *bucket_pointer;
 	stationary_vector_iterator() = default;
 	explicit stationary_vector_iterator(bucket_pointer const b, pointer const p) : b(b), p(p) { }
-	template<class T2, class P2, class R2>
-	stationary_vector_iterator(stationary_vector_iterator<T2, P2, R2, typename std::enable_if<
+	enum { initial_bucket_size = stationary_vector_payload<pointer, GrowthMode, difference_type, size_type>::traits_type::initial_bucket_size };
+	template<class T2, int GM2, class P2, class R2>
+	stationary_vector_iterator(stationary_vector_iterator<T2, GM2, P2, R2, typename std::enable_if<
 		std::is_convertible<T2 *, T *>::value &&
 		std::is_convertible<P2, Pointer>::value &&
 		std::is_convertible<R2, Reference>::value
@@ -1282,12 +1453,12 @@ struct stationary_vector_iterator
 	pointer operator->() const { return this->p; }
 	reference operator*() const { return *this->p; }
 	reference operator[](difference_type const value) const { this_type i(*this); i += value; return *i; }
-	template<class T2, class P2, class R2> bool operator==(stationary_vector_iterator<T2, P2, R2, Bucket> const &other) const { return this->p == other.p; }
-	template<class T2, class P2, class R2> bool operator!=(stationary_vector_iterator<T2, P2, R2, Bucket> const &other) const { return !this->operator==(other); }
-	template<class T2, class P2, class R2> bool operator< (stationary_vector_iterator<T2, P2, R2, Bucket> const &other) const { return other.b && (!this->b || this->operator- (other) < difference_type()); }
-	template<class T2, class P2, class R2> bool operator> (stationary_vector_iterator<T2, P2, R2, Bucket> const &other) const { return  other.operator< (*this); }
-	template<class T2, class P2, class R2> bool operator<=(stationary_vector_iterator<T2, P2, R2, Bucket> const &other) const { return !this->operator> (other); }
-	template<class T2, class P2, class R2> bool operator>=(stationary_vector_iterator<T2, P2, R2, Bucket> const &other) const { return !this->operator< (other); }
+	template<class T2, int GM2, class P2, class R2> bool operator==(stationary_vector_iterator<T2, GM2, P2, R2, Bucket> const &other) const { return this->p == other.p; }
+	template<class T2, int GM2, class P2, class R2> bool operator!=(stationary_vector_iterator<T2, GM2, P2, R2, Bucket> const &other) const { return !this->operator==(other); }
+	template<class T2, int GM2, class P2, class R2> bool operator< (stationary_vector_iterator<T2, GM2, P2, R2, Bucket> const &other) const { return other.b && (!this->b || this->operator- (other) < difference_type()); }
+	template<class T2, int GM2, class P2, class R2> bool operator> (stationary_vector_iterator<T2, GM2, P2, R2, Bucket> const &other) const { return  other.operator< (*this); }
+	template<class T2, int GM2, class P2, class R2> bool operator<=(stationary_vector_iterator<T2, GM2, P2, R2, Bucket> const &other) const { return !this->operator> (other); }
+	template<class T2, int GM2, class P2, class R2> bool operator>=(stationary_vector_iterator<T2, GM2, P2, R2, Bucket> const &other) const { return !this->operator< (other); }
 	this_type &operator+=(difference_type value) { bucket_advance(const_cast<bucket_type const *&>(this->b), this->p, value); return *this; }
 	this_type &operator-=(difference_type const value) { return this->operator+=(-value); }
 	this_type &operator++() { ++this->p; if (this->p == this->b->items_end()) { ++this->b; this->p = this->b->items_begin(); } return *this; }
@@ -1297,42 +1468,44 @@ struct stationary_vector_iterator
 	this_type  operator+ (difference_type const value) const { this_type result(*this); result += value; return result; }
 	this_type  operator- (difference_type const value) const { this_type result(*this); result -= value; return result; }
 	friend this_type operator+ (difference_type const value, this_type const &me) { return me + value; }
-	template<class T2, class P2, class R2>
-	difference_type operator- (stationary_vector_iterator<T2, P2, R2, Bucket> const other) const
+	template<class T2, int GM2, class P2, class R2>
+	difference_type operator- (stationary_vector_iterator<T2, GM2, P2, R2, Bucket> const other) const
 	{
-		typedef typename stationary_vector_iterator<T2, P2, R2, Bucket>::pointer pointer2;
-		difference_type d;
-		if (!this->b && !other.b)
-		{
-			d = difference_type();
-		}
-		else
-		{
-			assert(this->b && other.b);
-			{
-				bucket_pointer b1 = this->b, b2 = other.b;
-				if (!(b1 < b2)) /* swap */ { bucket_pointer const b3 = b1; b1 = b2; b2 = b3; }
-				for (d = difference_type(); b1 != b2; ++b1)
-				{
-					d += static_cast<difference_type>(b1->bucket_size());
-				}
-			}
-			{
-				bucket_pointer const b1 = this->b, b2 = other.b;
-				pointer const p1 = this->p;
-				pointer2 p2 = other.p;
-				d = (p1 - static_cast<pointer const &>(b1->items_begin())) - (p2 - static_cast<pointer2 const &>(b2->items_begin())) + (b1 < b2 ? -d : +d);
-			}
-		}
-		return d;
+		assert(!!this->b == !!other.b);
+		return
+			(this->b ? static_cast<difference_type>(this->b->ibegin() + (this->p - static_cast<pointer const &>(this->b->items_begin()))) : difference_type()) -
+			(other.b ? static_cast<difference_type>(other.b->ibegin() + (other.p - static_cast<pointer const &>(other.b->items_begin()))) : difference_type());
 	}
 	bucket_pointer b;
 	pointer p;
 protected:
-	static ptrdiff_t bucket_advance(bucket_type const *&bucket, pointer &ptr, difference_type value) /* returns the number of buckets advanced */
+	static ptrdiff_t bucket_advance(bucket_type const *&bucket, pointer &ptr, difference_type const distance) /* returns the number of buckets advanced */
 	{
 		bucket_type const *b = bucket;
 		pointer p = ptr;
+		if (b->pow2_total_marker())
+		{
+			enum { initial_bucket_size = this_type::initial_bucket_size, initial_bucket_size_log2 = detail::log2<initial_bucket_size>::value };
+			size_type bucket_ibegin = b->ibegin();
+			assert(!(initial_bucket_size == (static_cast<size_type>(1) << initial_bucket_size_log2) ? bucket_ibegin & ((static_cast<size_type>(1) << initial_bucket_size_log2) - 1) : (bucket_ibegin % initial_bucket_size)));
+			size_type const i = static_cast<size_type>(bucket_ibegin + (p - b->items_begin()));
+			size_type const j = static_cast<size_type>(i + distance);
+			int const ichunk_log2 = detail::ilog2<size_type>(initial_bucket_size == (static_cast<size_type>(1) << initial_bucket_size_log2) ? i >> initial_bucket_size_log2 : (i / initial_bucket_size));
+			int const jchunk_log2 = detail::ilog2<size_type>(initial_bucket_size == (static_cast<size_type>(1) << initial_bucket_size_log2) ? j >> initial_bucket_size_log2 : (j / initial_bucket_size));
+			if (difference_type const dchunk = static_cast<difference_type>(jchunk_log2) - static_cast<difference_type>(ichunk_log2))
+			{
+				detail::fast_advance(b, dchunk);
+				p = b->items_begin();
+				detail::fast_advance(p, static_cast<difference_type>(j) - static_cast<difference_type>(b->ibegin()));
+			}
+			else
+			{
+				detail::fast_advance(p, static_cast<difference_type>(j) - static_cast<difference_type>(i));
+			}
+		}
+		else
+		{
+		difference_type value = distance;
 		difference_type const zero = difference_type();
 		if (value > zero)
 		{
@@ -1364,6 +1537,7 @@ protected:
 				}
 			}
 		}
+		}
 		assert(!(b && p != b->items_begin() && p == b->items_end()) && "pointer must never point to the end of an array, but to the beginning of the next array");
 		ptrdiff_t const result = b - bucket;
 		bucket = b;
@@ -1374,10 +1548,10 @@ protected:
 
 namespace detail
 {
-	template<class T, class Pointer, class Reference, class Bucket>
-	struct iterator_partitioner<stationary_vector_iterator<T, Pointer, Reference, Bucket> >
+	template<class T, int GrowthMode, class Pointer, class Reference, class Bucket>
+	struct iterator_partitioner<stationary_vector_iterator<T, GrowthMode, Pointer, Reference, Bucket> >
 	{
-		typedef stationary_vector_iterator<T, Pointer, Reference, Bucket> base_iterator;
+		typedef stationary_vector_iterator<T, GrowthMode, Pointer, Reference, Bucket> base_iterator;
 		typedef typename base_iterator::pointer iterator;
 		typedef typename std::iterator_traits<iterator>::difference_type difference_type;
 		base_iterator _begin, _end;
@@ -1448,9 +1622,10 @@ class stationary_vector
 	// Some of the complicated logic here is to allow for the invalidation of the 'end' iterator when inserting elements (and removing elements, wherever we choose to auto-deallocate).
 	typedef stationary_vector this_type;
 public:
-	typedef typename std::conditional<std::is_same<typename std::remove_cv<Ax>::type, void>::value, std::allocator<T>, Ax>::type allocator_type;
+	typedef typename detail::allocator_traits<typename std::conditional<std::is_same<typename std::remove_cv<Ax>::type, void>::value, std::allocator<T>, Ax>::type>::template rebind_alloc<T> allocator_type;
 	typedef detail::allocator_traits<allocator_type> allocator_traits;
 	typedef T value_type;
+	typedef typename allocator_traits::allocation_growth_mode allocation_growth_mode;
 	typedef typename allocator_traits::reference reference;
 	typedef typename allocator_traits::const_reference const_reference;
 	typedef typename allocator_traits::volatile_reference volatile_reference;
@@ -1465,12 +1640,12 @@ public:
 	typedef typename const_volatile_pointer_wrapper::type const_volatile_pointer;
 	typedef typename allocator_traits::difference_type difference_type;
 	typedef typename allocator_traits::size_type size_type;
-	typedef stationary_vector_payload<pointer, difference_type, size_type> payload_type;
+	typedef stationary_vector_payload<pointer, allocation_growth_mode::value, difference_type, size_type> payload_type;
 	typedef typename payload_type::bucket_type bucket_type;
-	typedef stationary_vector_iterator<value_type, pointer, reference, bucket_type const> iterator;
-	typedef stationary_vector_iterator<value_type const, const_pointer, const_reference, bucket_type const> const_iterator;
-	typedef stationary_vector_iterator<value_type volatile, volatile_pointer, volatile_reference, bucket_type const> multithreading_iterator;
-	typedef stationary_vector_iterator<value_type const volatile, const_volatile_pointer, const_volatile_reference, bucket_type const> const_multithreading_iterator;
+	typedef stationary_vector_iterator<value_type, allocation_growth_mode::value, pointer, reference, bucket_type const> iterator;
+	typedef stationary_vector_iterator<value_type const, allocation_growth_mode::value, const_pointer, const_reference, bucket_type const> const_iterator;
+	typedef stationary_vector_iterator<value_type volatile, allocation_growth_mode::value, volatile_pointer, volatile_reference, bucket_type const> multithreading_iterator;
+	typedef stationary_vector_iterator<value_type const volatile, allocation_growth_mode::value, const_volatile_pointer, const_volatile_reference, bucket_type const> const_multithreading_iterator;
 	typedef detail::iterator_partitioner<iterator> partitioner_type;
 	typedef detail::iterator_partitioner<const_iterator> const_partitioner_type;
 	typedef iterator
@@ -1534,16 +1709,30 @@ public:
 		detail::is_iterator<It, std::input_iterator_tag>::value
 		), void>::type append(It begin, It end)
 	{
-		begin = this->append_up_to_reallocation<It>(begin, end);
-		if (begin != end)
+		bool const expand_requires_pow2 = this->pow2_growth();
+		for (;;)
+		{
+			begin = this->append_up_to_reallocation<It>(begin, end);
+			if (!expand_requires_pow2 || begin == end) { break; }
+			assert(this->size() == this->capacity());
+			this->reserve(this->size() + 1);
+			assert(this->size() != this->capacity());
+		}
+		if (expand_requires_pow2)
+		{
+			assert(begin == end);
+		}
+		else if (begin != end)
 		{
 			assert(this->size() == this->capacity());
 			bool is_forward_iterator = detail::is_iterator<It, std::forward_iterator_tag>::value;
 			typename std::iterator_traits<It>::difference_type const d = std::distance(begin, is_forward_iterator ? end : begin);
 			this_type temp(this->allocator());
-			temp.reserve(this->calculate_next_bucket_size_from_capacity(this->size() + (d ? static_cast<size_type>(d) : static_cast<size_type>(1))));
+			temp.reserve(temp.size() + (d ? static_cast<size_type>(d) : static_cast<size_type>(1)));
+			assert(temp.payload().bucket_count() <= 1);
+			assert(temp.capacity() - temp.size() >= static_cast<size_type>(d));
 			temp.initialize<It>(begin, end);
-			this->payload().append(std::move(temp.payload()));
+			this->payload().splice_buckets(std::move(temp.payload()));
 			typename outer_payload_type::atomic_size_type temp_size(0);
 			using std::swap; swap(temp.outer.size, temp_size);
 			this->outer.size += temp_size;
@@ -1680,17 +1869,18 @@ public:
 		allocator_type &ax = this->allocator();
 		pointer p = this->end_ptr();
 		allocator_traits::construct(ax, allocator_traits::ptr_address(ax, p), std::forward<Args>(args)...);
-		++this->outer.size;
+		assert(this->outer.size == size);
+		this->outer.size = new_size;
 		return *p;
 	}
 	void emplace_back_n(size_type n /* NOTE: There's no variadic version of this function because this is optimized for cases where an allocator-aware version of std::uninitialized_value_construct can be called. */)
 	{
-		size_type const m = this->size();
+		size_type m = this->size();
+		append_guard revert(this, m);
 		if (this->capacity() < m + n)
 		{
 			this->reserve(m + n);
 		}
-		append_guard revert(this, m);
 		iterator i = this->nth(m);
 		while (n)
 		{
@@ -1698,7 +1888,9 @@ public:
 			if (p_end - i.p > static_cast<difference_type>(n)) { p_end = i.p; p_end += static_cast<difference_type>(n); }
 			detail::uninitialized_value_construct(i.p, static_cast<size_type>(p_end - i.p), this->allocator());
 			size_type const delta = static_cast<size_type>(p_end - i.p);
-			this->outer.size += delta;
+			assert(this->outer.size == m);
+			m += delta;
+			this->outer.size = m;
 			n -= delta;
 			if (!n) { break; }
 			++i.b;
@@ -1727,6 +1919,21 @@ public:
 			end = begin;
 		}
 		return begin;
+	}
+	bool pow2_growth() const
+	{
+		payload_type const &payload = this->payload();
+		size_t const nbuckets = payload.bucket_count();
+		bucket_type const *const bucket = payload.bucket_address(nbuckets);
+		return bucket->pow2_total_marker();
+	}
+	void pow2_growth(bool const value) /* Only valid when the capacity is zero! */
+	{
+		payload_type &payload = this->payload();
+		size_t const nbuckets = payload.bucket_count();
+		assert(nbuckets == 0);
+		bucket_type *const bucket = payload.bucket_address(nbuckets);
+		bucket->pow2_total_marker(value);
 	}
 	reference front() noexcept(true) { return *this->begin_ptr(); }
 	const_reference front() const noexcept(true) { return *this->begin_ptr(); }
@@ -1764,18 +1971,13 @@ public:
 	}
 	iterator insert(const_iterator_or_cref pos, value_type &&value) { return this->emplace<value_type &&>(pos, std::move(value)); }
 	iterator insert(const_iterator_or_cref pos, std::initializer_list<value_type> ilist) { return this->insert<value_type const *>(pos, ilist.begin(), ilist.end()); }
-	size_type max_size() const
-	{
-		size_type result = allocator_traits::max_size(this->allocator());
-		size_type const diffmax = static_cast<size_type>((std::numeric_limits<difference_type>::max)());
-		if (result > diffmax) { result = diffmax; }
-		return result;
-	}
+	size_type max_size() const { return (std::min)(static_cast<size_type>(allocator_traits::max_size(this->allocator())), static_cast<size_type>((std::min)(static_cast<size_type>((std::numeric_limits<difference_type>::max)()), static_cast<size_type>(bucket_type::max_size())))); }
 	iterator nth(size_type const i) { return this->mutable_iterator(static_cast<this_type const *>(this)->nth(i)); }
 	const_iterator nth(size_type const i) const
 	{
 		/* COPY of below (volatile) -- keep in sync! */
 		payload_type const &payload = this->payload();
+		if (bucket_type::static_pow2_mode() <= 0)
 		{
 			bucket_type const *const bucket = payload.bucket_address(0);
 			if (i < bucket->iend())  // Fast path -- optimization for 1 bucket
@@ -1794,6 +1996,7 @@ public:
 	{
 		/* COPY of above (non-volatile) -- keep in sync! */
 		payload_type const volatile &payload = this->payload();
+		if (bucket_type::static_pow2_mode() <= 0)
 		{
 			bucket_type const volatile *const bucket = payload.bucket_address(0);
 			if (i < bucket->iend())  // Fast path -- optimization for 1 bucket
@@ -1978,7 +2181,10 @@ public:
 			end.p = p_begin;
 		}
 		this->outer.size -= n;
-		this->shrink_to_fit(true);
+		if (!this->pow2_growth())
+		{
+			this->shrink_to_fit(true);
+		}
 	}
 	reference push_back(value_type const &value) { return this->emplace_back(value); }
 	reference push_back(value_type &&value) { return this->emplace_back(std::move(value)); }
@@ -1986,50 +2192,43 @@ public:
 	const_reverse_iterator rbegin() const { return const_reverse_iterator(this->end()); }
 	reverse_iterator rend() { return reverse_iterator(this->begin()); }
 	const_reverse_iterator rend() const { return const_reverse_iterator(this->begin()); }
-	size_type calculate_next_bucket_size_from_capacity(size_type const minimum_total_capacity) const
+	enum { initial_bucket_size = payload_type::traits_type::initial_bucket_size };
+	void reserve(size_type const n)
 	{
-		size_type result = size_type();
-		if (minimum_total_capacity > this->capacity())
+		if (n > this->max_size())
 		{
-			if (minimum_total_capacity > this->max_size())
+			detail::throw_length_error("length too long");
+		}
+		while (n > this->capacity())
+		{
+		size_type desired_bucket_size = size_type();
+		if (this->pow2_growth())
+		{
+			payload_type &payload = this->payload();
+			if (size_type const m = payload.bucket_count())
 			{
-#if defined(_MSC_VER) && defined(_CRT_STRINGIZE)
-				__if_exists(_Xlength_error)
-				{
-					_Xlength_error(_CRT_STRINGIZE(stationary_vector<T>) " too long");
-				}
-				__if_not_exists(_Xlength_error)
-#endif
-				{
-					typedef std::vector<size_t> V;
-					V v;
-					typename V::size_type max_size = v.max_size();
-					if (max_size < (std::numeric_limits<typename V::size_type>::max)()) { max_size = (std::numeric_limits<typename V::size_type>::max)(); }
-					if (max_size + 1 > max_size) { ++max_size; }
-					if (max_size != v.max_size()) { v.reserve(max_size); } /* throw std::length_error(...) */
-				}
+				size_type const preceding_bucket_size = payload.bucket_size(m - 1);
+				desired_bucket_size = preceding_bucket_size + (m > 1 ? preceding_bucket_size : size_type());
 			}
+			else
+			{
+				desired_bucket_size = this_type::initial_bucket_size;
+			}
+		}
+		else
+		{
 			payload_type const &payload = this->payload();
-			size_type const m = payload.bucket_index(minimum_total_capacity);
-			if (m >= payload.bucket_count() && minimum_total_capacity)
+			size_type const m = payload.bucket_index(n);
+			if (m >= payload.bucket_count() && n)
 			{
 				size_type
 					preceding_bucket_size = m >= 1 ? payload.bucket_size(m - 1) : size_type(),
-					desired_extra_size = minimum_total_capacity - payload.bucket_ibegin(m);
-				size_type const min_size =
-#if !defined(_DEBUG) && defined(NDEBUG) && !(defined(STATIONARY_VECTOR_DEBUG) && ((2 * STATIONARY_VECTOR_DEBUG + 1) - 1))
-					(!m ? (sizeof(this_type) + sizeof(value_type) - 1) / sizeof(value_type) /* Performance optimization to allocate at least as much as the size of the vector */ : 0) +
-#endif
-					0;
+					desired_extra_size = n - payload.bucket_ibegin(m);
+				size_type const min_size = !m ? this_type::initial_bucket_size : size_type();
 				if (desired_extra_size < min_size) { desired_extra_size = min_size; }
-				result = (m > 1 ? preceding_bucket_size : 0) + (desired_extra_size < preceding_bucket_size ? preceding_bucket_size : desired_extra_size);
+				desired_bucket_size = (m > 1 ? preceding_bucket_size : 0) + (desired_extra_size < preceding_bucket_size ? preceding_bucket_size : desired_extra_size);
 			}
 		}
-		return result;
-	}
-	void reserve(size_type const n)
-	{
-		size_type desired_bucket_size = this->calculate_next_bucket_size_from_capacity(n);
 #if (__cplusplus >= 202002L || defined(__cpp_if_constexpr)) && defined(_MSC_VER) && defined(_CPPLIB_VER)
 		if constexpr (detail::is_allocator_same_as_malloc<allocator_type>::value)
 		{
@@ -2067,8 +2266,10 @@ public:
 #endif
 		if (desired_bucket_size)
 		{
-			this->push_bucket(desired_bucket_size);
+			this->_push_bucket(desired_bucket_size);
 		}
+		}
+		assert(!this->pow2_growth() || !(this->capacity() & (this->capacity() - 1))) /* To reduce the need for multiplication and division, we should ensure power-of-2 growth implies power-of-2 capacity. */;
 	}
 	void resize(size_type const n)
 	{
@@ -2095,12 +2296,13 @@ public:
 		}
 	}
 	void shrink_to_fit() { return this->shrink_to_fit(false); }
-	void shrink_to_fit(bool const advisory) /* Does NOT make elements contiguous! If you want that, move-construct + swap a fresh container. */
+	void shrink_to_fit(bool const advisory, size_t preferred_buckets = 0) /* Does NOT make elements contiguous! If you want that, move-construct + swap a fresh container with power-of-2 sizing mode disabled. */
 	{
 		payload_type &payload = this->payload();
 		size_t ibucket;
 		pointer const p = payload.unsafe_index(this->size(), &ibucket);
 		size_t min_buckets = ibucket + (p != payload.bucket_begin(ibucket)) + advisory;
+		if (min_buckets < preferred_buckets) { min_buckets = preferred_buckets; }
 		for (allocator_type &ax = this->allocator(); payload.bucket_count() > min_buckets; )
 		{
 			size_t const nb = payload.bucket_count() - 1;
@@ -2188,7 +2390,7 @@ private:
 		*pos = std::move(unaliased_to_insert);
 		return pos;
 	}
-	void push_bucket(size_type const desired_bucket_size)
+	void _push_bucket(size_type const desired_bucket_size)
 	{
 		payload_type &payload = this->payload();
 		size_type const m = payload.bucket_count();
@@ -2205,8 +2407,8 @@ private:
 	void swap_except_allocator(this_type &other) noexcept(true)
 	{
 		using std::swap;
-		swap(this->outer.inner, other.outer.inner);
 		swap(this->outer.size, other.outer.size);
+		swap(this->outer.inner, other.outer.inner);
 	}
 	template<class It>
 	void append(It begin, It end, std::false_type)
@@ -2294,13 +2496,13 @@ private:
 	struct outer_payload_type : public allocator_type
 	{
 		typedef typename detail::atomic_traits_of<size_type>::atomic_type atomic_size_type;
-		explicit outer_payload_type(allocator_type &&ax) : allocator_type(std::move(ax)), inner(), size(0) { }
-		explicit outer_payload_type(allocator_type const &ax) : allocator_type(ax), inner(), size(0) { }
+		explicit outer_payload_type(allocator_type &&ax) : allocator_type(std::move(ax)), size(0), inner() { }
+		explicit outer_payload_type(allocator_type const &ax) : allocator_type(ax), size(0), inner() { }
 		allocator_type &allocator() { return *this; }
 		allocator_type const &allocator() const { return *this; }
 
-		payload_type inner;
 		atomic_size_type size;
+		payload_type inner;
 		// *** STOP!!! WHEN ADDING FIELDS -- Make SURE to update move/copy/swap constructors and assignments!
 	};
 	class append_guard
@@ -2309,13 +2511,16 @@ private:
 		append_guard &operator =(append_guard const &);
 		this_type *me;
 		size_type m;
+		size_t old_nbuckets;
 	public:
-		explicit append_guard(this_type *me, size_type m) : me(me), m(m) { }
+		explicit append_guard(this_type *me, size_type m) : me(me), m(m), old_nbuckets(me->payload().bucket_count()) { }
 		~append_guard()
 		{
 			if (me)
 			{
 				me->pop_back_n(me->size() - m);
+				me->shrink_to_fit(false, this->old_nbuckets);
+				assert(me->payload().bucket_count() >= this->old_nbuckets);
 			}
 		}
 		void release() { this->me = NULL; }
@@ -2330,7 +2535,13 @@ private:
 	stationary_vector(void const *, void const *, this_type const &other, allocator_type const &ax) : stationary_vector(ax) { this->initialize<const_iterator>(other.begin(), other.end()); }
 	template<bool Move>
 	explicit stationary_vector(void const *, void const *, typename std::conditional<Move, allocator_type &&, allocator_type const &>::type ax, std::integral_constant<bool, Move>) noexcept(true)
-		: outer(static_cast<typename std::conditional<Move, allocator_type &&, allocator_type const &>::type>(ax)) { }
+		: outer(static_cast<typename std::conditional<Move, allocator_type &&, allocator_type const &>::type>(ax))
+	{
+		if (!bucket_type::static_pow2_mode())
+		{
+			this->pow2_growth(true);
+		}
+	}
 };
 
 #if __cplusplus >= 202002L || defined(__cpp_deduction_guides)

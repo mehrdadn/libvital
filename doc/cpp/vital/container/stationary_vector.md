@@ -8,14 +8,14 @@
 
 **Semantically**, it is _almost_ a drop-in replacement for `std::vector`, except:
 - It is **piecewise-contiguous** (with geometrically larger chunks), not fully contiguous.
-- Move & `swap()` operations drag iterator validity along with them, since iterators hold a reference to the containers for traversal purposes. (References are unaffected.)
+- Move & `swap()` operations drag iterator validity along with them, since iterators hold a reference to the containers for traversal purposes. (Pointers/references are unaffected.)
 
-Wrapping `std::unique_ptr` around the container can address both of these downsides.
+Adding an extra layer of indirection around the container (e.g., via `std::unique_ptr`) can help prevent iterator invalidation.
 
 **Performance-wise**, `stationary_vector` is not as cheap as `std::vector`:
 - `sizeof(stationary_vector<T>)` is large (around 8 × (2 × 48 + 2) ≈ 800 bytes on x64).
 - Each iterator is _twice_ as big as a pointer.
-- `end()` is more expensive than `begin()` and can require multiplication for non-power-of-2 sizes.
+- `end()` is slightly more expensive than `begin()`, as it can require multiplication for non-power-of-2 sizes.
 - Overall, it is slower (naturally), although my aim is to keep the performance competitive.
 
 **Exception-safety** is intended to be on par with that of `std::vector` (if not better).
