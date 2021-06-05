@@ -1812,12 +1812,16 @@ public:
 	const_pointer          nth_ptr(size_type const i) const          { return this->payload().unsafe_index(i); }
 	volatile_pointer       nth_ptr(size_type const i)       volatile { return this->payload().unsafe_index(i); }
 	const_volatile_pointer nth_ptr(size_type const i) const volatile { return this->payload().unsafe_index(i); }
-	// We make these friend functions so that forced template instantiation doesn't instantiate them. (Otherwise they might not compile..)
-	friend bool operator< (this_type const &a, this_type const &b)
+	friend
+#ifdef __cpp_lib_three_way_comparison
+		auto operator<=>
+#else
+		bool operator<
+#endif
+		(this_type const &a, this_type const &b)
 	{
 		// PERF: Overload std::lexicographical_compare so that this works for sub-ranges too.
 		typedef detail::iterator_partitioner<const_iterator> Partitioner;
-		bool result = false;
 		Partitioner a_parts(a.begin(), a.end());
 		Partitioner b_parts(b.begin(), b.end());
 		for (;;)
@@ -1828,27 +1832,55 @@ public:
 			if (!part_size)
 			{
 				assert(a_parts.empty() || b_parts.empty());
-				result = a_part_size < b_part_size;
-				break;
+#ifdef __cpp_lib_three_way_comparison
+				auto
+#else
+				bool
+#endif
+					r = a_part_size
+#ifdef __cpp_lib_three_way_comparison
+					<=>
+#else
+					<
+#endif
+					b_part_size;
+#ifdef __cpp_lib_three_way_comparison
+				assert(r == std::lexicographical_compare_three_way(a.begin(), a.end(), b.begin(), b.end()));
+#else
+				assert(r == std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end()));
+#endif
+				return r;
 			}
 			typename Partitioner::iterator i1 = a_parts.begin_front(), j1 = i1; j1 += part_size;
 			typename Partitioner::iterator i2 = b_parts.begin_front(), j2 = i2; j2 += part_size;
-			result = std::lexicographical_compare(i1, j1, i2, j2);
+#if __cpp_lib_three_way_comparison
+			auto result = std::lexicographical_compare_three_way(i1, j1, i2, j2);
+			if (result != 0 || !part_size)
+			{
+				assert(result == std::lexicographical_compare_three_way(a.begin(), a.end(), b.begin(), b.end()));
+				return result;
+			}
+#else
+			bool result = std::lexicographical_compare(i1, j1, i2, j2);
 			if (result || std::lexicographical_compare(i2, j2, i1, j1) || !part_size)
 			{
-				break;
+				assert(result == std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end()));
+				return result;
 			}
+#endif
 			a_parts.begin_front(j1);
 			b_parts.begin_front(j2);
 			if (part_size == a_part_size) { a_parts.pop_front(); }
 			if (part_size == b_part_size) { b_parts.pop_front(); }
 		}
-		assert(result == std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end()));
-		return result;
 	}
+#ifndef __cpp_lib_three_way_comparison
+	// We make these friend functions so that forced template instantiation doesn't instantiate them. (Otherwise they might not compile..)
 	friend bool operator> (this_type const &a, this_type const &b) { return (b < a); }
 	friend bool operator<=(this_type const &a, this_type const &b) { return !(a > b); }
 	friend bool operator>=(this_type const &a, this_type const &b) { return !(a < b); }
+	friend bool operator!=(this_type const &a, this_type const &b) { return !(a == b); }
+#endif
 	friend bool operator==(this_type const &a, this_type const &b)
 	{
 		// PERF: Overload std::equal() (both overloads) so that this works for sub-ranges too.
@@ -1885,7 +1917,6 @@ public:
 		assert(result == (a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin())));
 		return result;
 	}
-	friend bool operator!=(this_type const &a, this_type const &b) { return !(a == b); }
 	this_type &operator =(std::initializer_list<value_type> items) { this->assign(items.begin(), items.end()); return *this; }
 	this_type &operator =(this_type const &other)
 	{

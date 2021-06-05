@@ -21,7 +21,7 @@ Wrapping `std::unique_ptr` around the container can address both of these downsi
 **Exception-safety** is intended to be on par with that of `std::vector` (if not better).
 I have tried to ensure this, but it has undergone limited testing.
 
-**Compatibility** is aimed for C++11 through C++20 on Visual C++, GCC, and Clang, though a few features (like three-way comparisons) might still be missing.
+**Compatibility** is aimed for C++11 through C++20 on Visual C++, GCC, and Clang.
 
 **Testing** for single-threaded use is done against test suites for `std::vector` from standard libraries,
 though please be aware that such tests don't catch everything; I've found and fixed bugs that haven't been caught by tests.
