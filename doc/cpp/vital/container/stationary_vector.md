@@ -1,6 +1,6 @@
-### [`stationary_vector`](../../../include/vital/container/stationary_vector.hpp): A **low-latency**, **parallelizable** in-situ alternative to `vector`
+### [`stationary_vector`](../../../../include/cpp/vital/container/stationary_vector.hpp): A **low-latency**, **parallelizable** in-situ alternative to `vector`
 
-[Click here for the implementation (header-only).](../../../include/vital/container/stationary_vector.hpp)
+[Click here for the implementation (header-only).](../../../../include/cpp/vital/container/stationary_vector.hpp)
 
 `stationary_vector` is an alternative to `std::vector` that grows **without** moving elements, hence:
 - Its growth does not introduce "hiccups" due to reallocation.
