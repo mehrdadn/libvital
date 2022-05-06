@@ -20,7 +20,9 @@ Adding an extra layer of indirection around the container (e.g., via `std::uniqu
 **Exception-safety** is intended to be on par with that of `std::vector` (if not better).
 I have tried to ensure this, but it has undergone limited testing.
 
-**Compatibility** is aimed for C++11 through C++20 on Visual C++, GCC, and Clang.
+**Compatibility** is aimed for C++11 through C++20 on Visual C++, GCC, and Clang.  
+(*Note:* A few isolated uses of technically illegal constructs such as strict aliasing violations do currently exist.
+So far, they have not caused any known problems, but I do intend to resolve them in the future.)
 
 **Testing** for single-threaded use is done against test suites for `std::vector` from standard libraries,
 though please be aware that such tests don't catch everything; I've found and fixed bugs that haven't been caught by tests.
