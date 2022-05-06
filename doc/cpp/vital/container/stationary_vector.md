@@ -15,7 +15,6 @@ Adding an extra layer of indirection around the container (e.g., via `std::uniqu
 **Performance-wise**, `stationary_vector` is not as cheap as `std::vector`:
 - `sizeof(stationary_vector<T>)` is large (around 8 × (2 × 48 + 2) ≈ 800 bytes on x64).
 - Each iterator is _twice_ as big as a pointer.
-- `end()` is slightly more expensive than `begin()`, as it can require multiplication for non-power-of-2 sizes.
 - Overall, it is slower (naturally), although my aim is to keep the performance competitive.
 
 **Exception-safety** is intended to be on par with that of `std::vector` (if not better).
