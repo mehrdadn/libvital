@@ -2926,7 +2926,7 @@ class stationary_vector
 {
 	// Some of the complicated logic here is to allow for the invalidation of the 'end' iterator when inserting elements (and removing elements, wherever we choose to auto-deallocate).
 	typedef stationary_vector this_type;
-	enum { is_noexcept_swappable_except_allocator = true };
+	enum { is_nothrow_swappable_except_allocator = true };
 
 	typedef typename std::conditional<std::is_same<typename std::remove_cv<Ax>::type, void>::value, std::allocator<T>, Ax>::type proposed_allocator_type;
 	typedef allocator_optimizations<Ax> stationary_vector_optimizations_;
@@ -4121,7 +4121,7 @@ public:
 		return this->outer.size();
 	}
 	void swap(this_type &other)
-		noexcept(allocator_traits::propagate_on_container_swap::value || noexcept(is_noexcept_swappable_except_allocator) || detail::extended_allocator_traits<allocator_type>::is_always_equal::value)
+		noexcept(allocator_traits::propagate_on_container_swap::value || noexcept(is_nothrow_swappable_except_allocator) || detail::extended_allocator_traits<allocator_type>::is_always_equal::value)
 	{
 		// Note: When propagate_on_container_swap is false, C++ requires allocators to be equal; otherwise, swapping is undefined behavior.
 		return this->swap(other, std::integral_constant<bool, allocator_traits::propagate_on_container_swap::value>());
@@ -4280,7 +4280,7 @@ private:
 		this->shrink_to_fit(false);
 	}
 
-	void swap_except_allocator(this_type &other) noexcept(is_noexcept_swappable_except_allocator)
+	void swap_except_allocator(this_type &other) noexcept(is_nothrow_swappable_except_allocator)
 	{
 		this->outer.swap_except_allocator(other.outer);
 	}
