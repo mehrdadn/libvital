@@ -4317,7 +4317,7 @@ private:
 			size_type const m = this->size();
 			bool const is_end = this->is_at_end(pos);
 			this->append<typename std::conditional<std::is_same<Reps, std::false_type>::value, It const &, It>::type>(std::forward<It>(begin), std::forward<It>(end), std::forward<Reps>(reps));
-			assert(((void)(end = begin), true)) /* Make explicit that the iterators might invalidated at this point, because they might've pointed into this container. */;
+			assert(((void)(end = It()), (void)(end = It()), true)) /* Make explicit that the iterators might invalidated at this point, because they might've pointed into this container. */;
 			if (is_end)
 			{
 				pos.p = this->nth(m).p;
