@@ -11,6 +11,7 @@ This library facilitates the definition and conversion of C++ enumerations.
 - `enum` &rarr; `std::string` conversion
 - `enum_traits<T>` providing the names, values, and ordering of the `enum` members
 - `enum` and `enum class` are both supported
+- Duplicate enum values are supported
 - "**Flag**" support, which add bitwise operators to enums
 - No extraneous or missing `enum` members
 - _Exact_ scope as declared (e.g., there is no additional nesting of the `enum` in another class)
