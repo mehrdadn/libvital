@@ -93,6 +93,28 @@ struct enum_name_view
 	constexpr char const *data() const { return this->begin(); }
 	constexpr size_t size() const { return static_cast<size_t>(this->end() - this->begin()); }
 	constexpr char const &operator[](size_t i) const { return this->data()[static_cast<ptrdiff_t>(i)]; }
+	constexpr size_t find_first_not_of(enum_name_view const s, size_t start_index = 0) const
+	{
+		size_t result = ~size_t();
+		for (char const *i = this->begin() + static_cast<ptrdiff_t>(start_index), *j = this->end(); i < j; ++i)
+		{
+			bool found = false;
+			for (size_t k = 0; k < s.size(); ++k)
+			{
+				if (s[k] == *i)
+				{
+					found = true;
+					break;
+				}
+			}
+			if (!found)
+			{
+				result = static_cast<size_t>(i - this->begin());
+				break;
+			}
+		}
+		return result;
+	}
 	constexpr int compare(enum_name_view const &other) const
 	{
 		int c = 0;
@@ -669,7 +691,8 @@ public:
 		detail::enum_mergesort(this->begin(), this->end(), scratch, typename member_type::name_less{enum_traits<T>::members_info().names()});
 	}
 
-	constexpr member_type const *find(char const *name, size_t name_length = ~size_t()) const
+	template<decltype(nullptr) Dummy = nullptr /* This is just to avoid a template instantiation error */>
+	constexpr member_type const *find(char const *name, size_t name_length = ~size_t(), detail::enum_members_info<T> const &members_info = std::enable_if_t<(sizeof(Dummy) > 0), enum_traits<T> >::members_info()) const
 	{
 		if (name_length == ~size_t())
 		{
@@ -683,7 +706,6 @@ public:
 			}
 		}
 		detail::enum_name_view needle(name, name_length);
-		decltype(auto) members_info = enum_traits<T>::members_info();
 		typename member_type::name_less less = { members_info.names() };
 		member_type const *b = this->begin();
 		member_type const *e = this->end();
@@ -948,6 +970,162 @@ constexpr F &&for_each_enum_component(T const &value, F &&callback, bool backwar
 }
 
 template<class T>
+constexpr T parse_enum(
+	typename std::conditional<false, T, detail::enum_name_view>::type text,
+	/* out */ size_t *end_index = nullptr,
+	detail::enum_name_view const &delim = "|",
+	detail::enum_name_view const &spaces = " \t\r\n",
+	detail::enum_members_sorted_by_name<T> const &members_sorted_by_name = detail::enum_singleton_factory<detail::enum_members_sorted_by_name<T> >::get()
+)
+{
+	typedef std::underlying_type_t<T> U;
+	T result = T();
+	size_t const n = text.size();
+	bool started = false;
+	size_t i = 0;
+	while (i < n)
+	{
+		i = text.find_first_not_of(spaces, i);
+		if (i > n) { i = n; }
+		if (started)
+		{
+			detail::enum_name_view suffix(text.data() + static_cast<ptrdiff_t>(i), text.size() - i);
+			if (suffix.size() >= delim.size() && detail::enum_name_view(suffix.data(), delim.size()) == delim)
+			{
+				i += delim.size();
+			}
+			else
+			{
+				// Unrecognized delimiter
+				break;
+			}
+			i = text.find_first_not_of(spaces, i);
+			if (i > n) { i = n; }
+		}
+		bool first_char_was_digit = false, negative = false;
+		size_t j = i;
+		if (i < j && text[i] == '-')
+		{
+			negative = true;
+			++i;
+		}
+		while (j < n)
+		{
+			char const ch = text[j];
+			bool const is_digit = static_cast<unsigned>(ch - '0') <= '9' - '0';
+			if (is_digit)
+			{
+				if (i == j)
+				{
+					first_char_was_digit = true;
+				}
+				// Keep going; digits are valid identifier characters
+			}
+			else if (static_cast<unsigned>(ch - 'a') <= 'z' - 'a' || static_cast<unsigned>(ch - 'A') <= 'Z' - 'A' || ch == '_')
+			{
+				// Keep going; normal identifier characters
+			}
+			else
+			{
+				break;
+			}
+			++j;
+		}
+		if (first_char_was_digit)
+		{
+			// TODO: This is a raw numeric value; parse it as such
+			unsigned char radix = 10;
+			if (text[i] == '0' && i + 1 < j)
+			{
+				char const radix_spec = text[i + 1];
+				if (static_cast<unsigned>(radix_spec - '0') > '9' - '0')
+				{
+					// Second letter isn't a digit; we have a prefix like 0x or something like that.
+					if (radix_spec == 'x' || radix_spec == 'X')
+					{
+						radix = 16;
+					}
+					else if (radix_spec == 'o' || radix_spec == 'O')
+					{
+						radix = 8;
+					}
+					else if (radix_spec == 'b' || radix_spec == 'B')
+					{
+						radix = 2;
+					}
+					else
+					{
+						// Error - unrecognized radix specifier
+						break;
+					}
+					i += 2;
+				}
+				else
+				{
+					radix = 8;
+				}
+			}
+			if (i == j)
+			{
+				// We had a prefix like "0x" with no actual number; stop here
+				break;
+			}
+			// Everything should be numeric past this point, but we'll need to verify
+			std::make_unsigned_t<U> v = std::make_unsigned_t<U>();
+			bool failed = false;
+			while (i < j)
+			{
+				char const ch = text[i];
+				unsigned char const digit = static_cast<unsigned char>(ch <= '9' ? ch - '0' : 10 + (ch - ((ch - 'a') <= 'z' - 'a' ? 'a' : 'A')));
+				if (digit >= radix)
+				{
+					// Invalid digit
+					failed = true;
+					break;
+				}
+				v = v * radix + digit;
+				++i;
+			}
+			if (failed)
+			{
+				break;
+			}
+			result = static_cast<T>(static_cast<U>(result) | (negative ? U() - v : v));
+		}
+		else if (negative)
+		{
+			// Can't have negative without a digit
+			break;
+		}
+		else if (i < j)
+		{
+			// We have a valid identifier; check to see that it's a valid member
+			if (detail::enum_named_member<T> const *found = members_sorted_by_name.find(text.data() + i, j - i))
+			{
+				result = static_cast<T>(static_cast<U>(result) | static_cast<U>(found->value));
+			}
+			else
+			{
+				// Invalid name encountered
+				break;
+			}
+		}
+		else
+		{
+			// Invalid character encountered
+			break;
+		}
+		i = j;
+		started = true;
+	}
+	if (end_index)
+	{
+		*end_index = i;
+	}
+	return result;
+}
+
+template<class T>
 typename std::enable_if<std::is_enum<T>::value, std::basic_string<char> >::type to_string(
 	T value,
 	detail::enum_name_view const &delim = " | ",
@@ -1156,6 +1334,12 @@ constexpr enum_test::enum_test()
 			}
 			return *a == *b;
 		}
+		static constexpr size_t end_of_parse_test_enum_1(detail::enum_name_view text)
+		{
+			size_t i = 0;
+			parse_enum<test_enum_1>(text, &i);
+			return i;
+		}
 	};
 
 	verify(is_flag<test_enum_0>::value, "invalid flag bit");
@@ -1164,6 +1348,10 @@ constexpr enum_test::enum_test()
 	verify(is_set(test_enum_0::test_enum_0_B, test_enum_0::test_enum_0_A) && !is_set(test_enum_0::test_enum_0_B, test_enum_0::test_enum_0_C), "invalid enum members");
 	verify((test_enum_0::test_enum_0_A | test_enum_0::test_enum_0_B | test_enum_0::test_enum_0_C) == test_enum_0::test_enum_0_D, "invalid enum members");
 
+	verify(string_helper::end_of_parse_test_enum_1("0xx") == 2 && string_helper::end_of_parse_test_enum_1("0b0") == 3, "parsing error");
+	verify(string_helper::end_of_parse_test_enum_1("0") == 1 && string_helper::end_of_parse_test_enum_1("0x") == 2 && string_helper::end_of_parse_test_enum_1("0x0") == 3, "parsing error");
+	verify(string_helper::end_of_parse_test_enum_1(" 0x1 | 2 | test_enum_1_A ") == 25, "parsing error");
+	verify(parse_enum<test_enum_1>("0") == test_enum_1() && parse_enum<test_enum_1>("") == test_enum_1() && parse_enum<test_enum_1>(" test_enum_1_A| test_enum_1_B |0x1000|0") == (test_enum_1_A | test_enum_1_B | static_cast<test_enum_1>(0x1000)), "parsing error");
 	verify(!is_flag<test_enum_1>::value, "invalid flag bit");
 	constexpr decltype(auto) members_info = enum_traits<test_enum_1>::members_info();
 	constexpr decltype(auto) members = enum_traits<test_enum_1>::members();
