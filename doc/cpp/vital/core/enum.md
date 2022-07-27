@@ -8,7 +8,7 @@ This library facilitates the definition and conversion of C++ enumerations.
 - **All** valid scopes are supported (namespaces, classes, functions)
 - **No limits** on the number or range of enumerators
 - **External** enumerations are supported (for generated/third-party/etc. headers)
-- `enum` &rarr; `std::string` conversion
+- `enum` &harr; `std::string` conversion
 - `enum_traits<T>` providing the names, values, and ordering of the `enum` members
 - `enum` and `enum class` are both supported
 - Duplicate enum values are supported
@@ -19,7 +19,6 @@ This library facilitates the definition and conversion of C++ enumerations.
 - Compile-time (`constexpr`) tests to validate correctness
 
 ### Not (yet) supported:
-- `std::string` &rarr; `enum` conversion
 - Enums with embedded strings (e.g., `enum { value [[foo("")]] }`)
 - C++11 (might be infeasible)
 - Trailing commas in macros (might be infeasible)
@@ -49,7 +48,7 @@ printf("0x%llX: %s\n", static_cast<long long>(first.value), members_info.name_c_
 printf("%s\n", members_info.name_c_str(value_lookup_table.find(E_x)));  // "E_x"
 ```
 
-Enum/flag &rarr; string conversions and intelligent decomposition:
+Enum/flag &harr; string conversions and intelligent decomposition:
 ```
 VIT_DEFINE_FLAG(
 	/* enum class */ F,
@@ -61,6 +60,7 @@ VIT_DEFINE_FLAG(
 );
 
 std::cout << to_string(F::C | F::D | static_cast<F>(0x8)) << std::endl;  // "0x8 | B | C | D"
+std::cout << to_string(parse_enum<F>("C | D | 0x8")) << std::endl;  // "0x8 | B | C | D"
 
 std::vector<F> components;
 for_each_enum_component(F::D, [&](F component) { components.push_back(component); });
