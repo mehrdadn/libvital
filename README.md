@@ -14,7 +14,7 @@ My current focus is on (modern) C++.
 
 ### `stationary_vector`: A **low-latency**, **parallelizable** in-situ alternative to `vector`
 
-[`vit::container::stationary_vector`](doc/vital/container/stationary_vector.md)
+[`vit::container::stationary_vector`](doc/cpp/vital/container/stationary_vector.md)
 fills the niche between [`std::vector`](https://en.cppreference.com/w/cpp/container/vector)
 & [`boost::container::stable_vector`](https://www.boost.org/doc/libs/1_75_0/doc/html/container/non_standard_containers.html).
 
